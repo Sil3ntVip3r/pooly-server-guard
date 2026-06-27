@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-VERSION="0.4.1"
+VERSION="0.4.2"
 SSH_PORT="${SSH_PORT:-6200}"
 ADMIN_USERS=("poolyadmin" "pooly-sil3ntvip3r-admin")
 POOLY_STATE_DIR="${POOLY_STATE_DIR:-/etc/pooly/server-guard-state}"
 POOLY_GUARD_ENV="${POOLY_GUARD_ENV:-/etc/pooly/server-guard.env}"
 REPORT_DIR="${REPORT_DIR:-$HOME/GPTlogs}"
+POOLY_PORT_STRICT_BASELINE="${POOLY_PORT_STRICT_BASELINE:-0}"
 SUDO=""
 [[ ${EUID:-$(id -u)} -eq 0 ]] || SUDO="sudo"
 
@@ -38,7 +39,7 @@ node_id(){
   esac
 }
 
-current_ports(){ ss -H -lntu 2>/dev/null | awk '{print $1,$5}' | sed -E 's/.*:([0-9]+)$/\1/' | sort -n | uniq; }
+current_ports(){ ss -H -lntu 2>/dev/null | awk '{print $5}' | sed -E 's/.*:([0-9]+)$/\1/' | sort -n | uniq; }
 current_services(){ systemctl list-units --type=service --state=running --no-legend 2>/dev/null | awk '{print $1}' | grep -E '^(coin-|miningcore|nginx|redis-server|fail2ban|chrony|netdata|push-agent|pm2-|systemd-journald@netdata)' | sort -u || true; }
 
 key_fingerprints(){
@@ -129,7 +130,26 @@ diff_state(){
   rm -f "$tmp"
   return "$rc"
 }
-port_audit(){ section "PORT DRIFT AUDIT"; diff_state ports current_ports && echo "PORT RESULT: PASS" || { echo "PORT RESULT: FAIL"; return 1; }; }
+
+port_audit(){
+  section "PORT AUDIT"
+  local failed=0
+  echo "INFO: Miningcore and coin daemon ports can open and close quickly. Static port drift is informational unless strict mode is enabled."
+  if ss -H -ltn 2>/dev/null | awk '{print $4}' | grep -Eq ':(22)$'; then
+    echo "FAIL: port 22 listener found"
+    failed=1
+  fi
+  if [[ "$POOLY_PORT_STRICT_BASELINE" == "1" ]]; then
+    diff_state ports current_ports && echo "STATIC PORT RESULT: PASS" || { echo "STATIC PORT RESULT: FAIL"; failed=1; }
+  else
+    if ! diff_state ports current_ports; then
+      echo "INFO: dynamic port drift detected but not failing."
+    else
+      echo "STATIC PORT RESULT: PASS"
+    fi
+  fi
+  [[ $failed -eq 0 ]] && { echo "PORT RESULT: PASS"; return 0; } || { echo "PORT RESULT: FAIL"; return 1; }
+}
 keys_drift(){ section "AUTHORIZED_KEYS DRIFT"; diff_state keys key_fingerprints && echo "KEYS RESULT: PASS" || { echo "KEYS RESULT: FAIL"; return 1; }; }
 sshd_drift(){ section "SSHD POLICY DRIFT"; diff_state sshd sshd_policy && echo "SSHD DRIFT RESULT: PASS" || { echo "SSHD DRIFT RESULT: FAIL"; return 1; }; }
 ufw_drift(){ section "UFW DRIFT"; diff_state ufw ufw_rules && echo "UFW DRIFT RESULT: PASS" || { echo "UFW DRIFT RESULT: FAIL"; return 1; }; }
@@ -140,21 +160,25 @@ guard_watch(){
   local tmp failed=0 host node report
   host="$(hostname)"; node="$(node_id)"; tmp="$(mktemp)"
   {
-    verify || failed=1; baseline_verify || failed=1; port_audit || failed=1; keys_drift || failed=1; sshd_drift || failed=1
+    verify || true
+    baseline_verify || true
+    port_audit || true
+    keys_drift || true
+    sshd_drift || true
     [[ "${POOLY_WATCH_WARN_UFW_DRIFT:-1}" == "1" ]] && ufw_drift || true
-    services_drift || failed=1
+    services_drift || true
     section "FAILED SERVICES"; systemctl --failed --no-pager || true
-    if test -f /var/run/reboot-required && [[ "${POOLY_WATCH_WARN_REBOOT:-1}" == "1" ]]; then echo "WARN: reboot required"; failed=1; fi
+    if test -f /var/run/reboot-required && [[ "${POOLY_WATCH_WARN_REBOOT:-1}" == "1" ]]; then echo "WARN: reboot required"; fi
   } | tee "$tmp"
   report="$REPORT_DIR/pooly-server-guard-watch-$host-$(date -u +%Y%m%d-%H%M%S).txt"; cp "$tmp" "$report"
   if grep -Eq 'RESULT: FAIL|DRIFT RESULT: FAIL|PORT RESULT: FAIL|KEYS RESULT: FAIL|SERVICE RESULT: FAIL|WARN: reboot required' "$tmp"; then failed=1; fi
-  if [[ $failed -ne 0 ]]; then discord_post "🚨 Pooly Server Guard FAIL on $host / node $node. Report: $report" || true; rm -f "$tmp"; return 1; fi
-  [[ "${POOLY_ALERT_ON_PASS:-0}" == "1" ]] && discord_post "✅ Pooly Server Guard PASS on $host / node $node" || true
+  if [[ $failed -ne 0 ]]; then discord_post "Pooly Server Guard FAIL on $host / node $node. Report: $report" || true; rm -f "$tmp"; return 1; fi
+  [[ "${POOLY_ALERT_ON_PASS:-0}" == "1" ]] && discord_post "Pooly Server Guard PASS on $host / node $node" || true
   rm -f "$tmp"; return 0
 }
 
 save_report(){ mkdirs; local f="$REPORT_DIR/pooly-server-guard-$(hostname)-$(date -u +%Y%m%d-%H%M%S).txt"; health | tee "$f"; echo "Saved report: $f"; }
-discord_test(){ discord_post "✅ Pooly Server Guard Discord test from $(hostname) / node $(node_id)" && echo "Discord test sent"; }
+discord_test(){ discord_post "Pooly Server Guard Discord test from $(hostname) / node $(node_id)" && echo "Discord test sent"; }
 
 install_timer(){
   need_sudo
@@ -175,8 +199,7 @@ EOF2
 Description=Run Pooly Server Guard watch every 30 minutes
 
 [Timer]
-OnBootSec=5min
-OnUnitActiveSec=30min
+OnCalendar=*:0/30
 Persistent=true
 
 [Install]
