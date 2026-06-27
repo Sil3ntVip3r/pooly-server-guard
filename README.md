@@ -32,14 +32,30 @@ Defensive hardening, baseline verification, drift detection, and optional Discor
 - `discord-test` sends a webhook test message.
 - `ssh-lockdown-preview` prints safe review-only commands for restricting SSH 6200 to trusted source IPs/subnets.
 
-## Install
+## GitHub install
+
+Recommended server path:
 
 ```bash
-mkdir -p ~/download
-cd ~/download
-tar -xzf pooly-server-guard-v0.4.0.tar.gz
-cd pooly-server-guard-v0.4.0
-./install-local.sh
+mkdir -p ~/GPTrepos
+cd ~/GPTrepos
+git clone git@github.com:Sil3ntVip3r/pooly-server-guard.git
+cd pooly-server-guard
+bash install-local.sh
+```
+
+If the repo is already cloned:
+
+```bash
+cd ~/GPTrepos/pooly-server-guard
+git pull --ff-only
+bash install-local.sh
+```
+
+`install-local.sh` installs the active script to:
+
+```text
+~/GPTlogs/pooly-server-guard.sh
 ```
 
 ## First safe test sequence
