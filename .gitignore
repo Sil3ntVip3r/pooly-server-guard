@@ -1,0 +1,26 @@
+# Secrets / local environment
+.env
+*.env
+server-guard.env
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+id_*
+*_deploy
+*_deploy.pub
+
+# Generated artifacts
+*.tar
+*.tar.gz
+*.zip
+*.sha256
+*.log
+*.tmp
+
+# Local reports/state
+reports/
+state/
+*.report.txt
+*.audit.txt
