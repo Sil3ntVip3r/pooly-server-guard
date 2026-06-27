@@ -1,10 +1,11 @@
-# Pooly Server Guard v0.4.0
+# Pooly Server Guard v0.4.2
 
 Defensive hardening, baseline verification, drift detection, and optional Discord alerting for the 4 Pooly SSDNodes servers.
 
-## Existing core functions from v0.3.1
+## Core checks
 
 - SSH hardening on port 6200 only
+- no port 22 listener
 - root SSH disabled
 - password and keyboard-interactive SSH disabled
 - `AllowUsers poolyadmin pooly-sil3ntvip3r-admin`
@@ -12,25 +13,33 @@ Defensive hardening, baseline verification, drift detection, and optional Discor
 - active NOPASSWD sudo rule detection
 - Fail2Ban sshd jail on port 6200
 - Ubuntu/Pooly baseline checks
-- health/audit reports
-- hostname standardization
+- hostname/node identification
+- authorized_keys fingerprint drift detection
+- sshd policy drift detection
+- UFW drift detection
+- Pooly service drift detection
+- failed systemd service detection
+- optional Discord webhook alerts
 
-## New in v0.4.0
+## New in v0.4.2
 
-- `init-state` captures the current known-good state:
-  - expected listening ports
-  - authorized_keys fingerprints
-  - effective sshd policy
-  - UFW numbered rules
-  - running Pooly service set
-- `watch` runs internal PASS/FAIL monitoring and can send Discord alerts.
-- `port-audit` warns/fails on unexpected listening ports.
-- `keys-drift` detects approved SSH key drift.
-- `sshd-drift` detects SSH policy drift.
-- `ufw-drift` detects firewall rule drift.
-- `install-watch-timer` runs the watch check every 30 minutes with systemd.
-- `discord-test` sends a webhook test message.
-- `ssh-lockdown-preview` prints safe review-only commands for restricting SSH 6200 to trusted source IPs/subnets.
+- Miningcore-aware port audit.
+- Dynamic Miningcore/coin daemon ports can open and close quickly without failing the watch check.
+- Static port drift is informational by default.
+- Strict static port drift can be re-enabled with:
+
+```bash
+POOLY_PORT_STRICT_BASELINE=1
+```
+
+- The timer now uses a clear 30-minute calendar schedule:
+
+```ini
+OnCalendar=*:0/30
+Persistent=true
+```
+
+- Removed the need for a separate Node003 hotfix workflow.
 
 ## GitHub install
 
@@ -65,7 +74,6 @@ Run on each node after installing:
 ```bash
 ~/GPTlogs/pooly-server-guard.sh verify
 ~/GPTlogs/pooly-server-guard.sh baseline-verify
-~/GPTlogs/pooly-server-guard.sh health
 sudo ~/GPTlogs/pooly-server-guard.sh init-state
 sudo ~/GPTlogs/pooly-server-guard.sh watch
 ```
@@ -78,6 +86,7 @@ BASELINE RESULT: PASS
 PORT RESULT: PASS
 KEYS RESULT: PASS
 SSHD DRIFT RESULT: PASS
+UFW DRIFT RESULT: PASS
 SERVICE RESULT: PASS
 ```
 
@@ -119,7 +128,8 @@ Only after manual `watch` passes:
 
 ```bash
 sudo ~/GPTlogs/pooly-server-guard.sh install-watch-timer
-systemctl list-timers | grep pooly-server-guard
+systemctl list-timers --all | grep pooly-server-guard
+sudo systemctl status pooly-server-guard-watch.timer --no-pager
 ```
 
 Disable:
