@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-VERSION="0.4.0"
+VERSION="0.4.1"
 SSH_PORT="${SSH_PORT:-6200}"
 ADMIN_USERS=("poolyadmin" "pooly-sil3ntvip3r-admin")
 POOLY_STATE_DIR="${POOLY_STATE_DIR:-/etc/pooly/server-guard-state}"
@@ -117,10 +117,17 @@ init_state(){
 }
 
 diff_state(){
-  local name="$1" cmd="$2" file="$POOLY_STATE_DIR/$name.txt" tmp
-  tmp="$(mktemp)"; eval "$cmd" > "$tmp"
-  if ! $SUDO test -f "$file"; then echo "WARN: missing baseline $file; run init-state"; rm -f "$tmp"; return 2; fi
-  if diff -u <($SUDO cat "$file") "$tmp"; then rm -f "$tmp"; return 0; else rm -f "$tmp"; return 1; fi
+  local state_name state_cmd state_file tmp rc
+  state_name="${1:?missing state name}"
+  state_cmd="${2:?missing state command}"
+  state_file="$POOLY_STATE_DIR/$state_name.txt"
+  tmp="$(mktemp)"
+  $state_cmd > "$tmp"
+  if ! $SUDO test -f "$state_file"; then echo "WARN: missing baseline $state_file; run init-state"; rm -f "$tmp"; return 2; fi
+  diff -u <($SUDO cat "$state_file") "$tmp"
+  rc=$?
+  rm -f "$tmp"
+  return "$rc"
 }
 port_audit(){ section "PORT DRIFT AUDIT"; diff_state ports current_ports && echo "PORT RESULT: PASS" || { echo "PORT RESULT: FAIL"; return 1; }; }
 keys_drift(){ section "AUTHORIZED_KEYS DRIFT"; diff_state keys key_fingerprints && echo "KEYS RESULT: PASS" || { echo "KEYS RESULT: FAIL"; return 1; }; }
