@@ -1,4 +1,4 @@
-# Pooly Server Guard v0.4.3
+# Pooly Server Guard v0.4.4
 
 Defensive hardening, baseline verification, drift detection, self-updating scheduled checks, and optional Discord alerting for the 4 Pooly SSDNodes servers.
 
@@ -21,14 +21,33 @@ Defensive hardening, baseline verification, drift detection, self-updating sched
 - Pooly service health detection, including `activating auto-restart`
 - failed systemd service detection
 - self-update check from the local GitHub clone during scheduled `watch`
+- root-safe GitHub self-update using the admin user's SSH deploy-key config
 - stable report path for root/systemd timer runs
 - optional Discord webhook alerts
+
+## New in v0.4.4
+
+v0.4.4 fixes a root/systemd self-update issue discovered on Node004.
+
+When the timer runs as root, Git commands must still use the admin user's deploy-key SSH config. v0.4.4 runs Git operations as `REPORT_OWNER`, which defaults to:
+
+```text
+pooly-sil3ntvip3r-admin
+```
+
+This fixes failures like:
+
+```text
+ssh: Could not resolve hostname github-pooly-guard-node004
+fatal: Could not read from remote repository.
+UPDATE RESULT: FAIL
+```
 
 ## New in v0.4.3
 
 ### Self-updating scheduled checks
 
-`watch` now runs a GitHub update check before the normal guard checks.
+`watch` runs a GitHub update check before the normal guard checks.
 
 By default it uses:
 
@@ -57,7 +76,7 @@ SubState=auto-restart
 Result=exit-code
 ```
 
-v0.4.3 adds `service-health` and includes it in `watch`, so auto-restart loops now fail the guard check.
+v0.4.3+ includes `service-health` in `watch`, so auto-restart loops fail the guard check.
 
 Run manually:
 
