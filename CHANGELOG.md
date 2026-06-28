@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.4.7
+
+### Fixed
+
+- Fixed `AllowUsers` parsing for sshd policies where users may appear across multiple effective `allowusers` lines.
+- Uses exact token matching with `awk` for each allowed admin user instead of newline-sensitive string matching.
+- Prevents false failures like `FAIL: poolyadmin missing from AllowUsers` when the SSHD policy drift check is still passing.
+
 ## v0.4.6
 
 ### Fixed
