@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-VERSION="0.4.8"
+VERSION="0.4.9"
 SSH_PORT="${SSH_PORT:-6200}"
 ADMIN_USERS=("poolyadmin" "pooly-sil3ntvip3r-admin")
 POOLY_STATE_DIR="${POOLY_STATE_DIR:-/etc/pooly/server-guard-state}"
@@ -345,6 +345,79 @@ service_health(){
   [[ $failed -eq 0 ]] && { echo "SERVICE HEALTH RESULT: PASS"; return 0; } || { echo "SERVICE HEALTH RESULT: FAIL"; return 1; }
 }
 
+watch_results_summary(){
+  local file="${1:?missing report tmp}"
+  grep -E '^(UPDATE RESULT|RESULT|BASELINE RESULT|PORT RESULT|KEYS RESULT|SSHD DRIFT RESULT|UFW DRIFT RESULT|SERVICE RESULT|SERVICE HEALTH RESULT|FAILED SERVICES RESULT):' "$file" \
+    | sed 's/^/- /' \
+    | head -20
+}
+
+watch_failure_summary(){
+  local file="${1:?missing report tmp}"
+  grep -nE 'FAIL:|WARN:|ERROR:|RESULT: FAIL|DRIFT RESULT: FAIL|SERVICE HEALTH RESULT: FAIL|FAILED SERVICES RESULT: FAIL|UPDATE RESULT: FAIL' "$file" \
+    | head -10 \
+    || true
+}
+
+discord_watch_message(){
+  local status="${1:?missing status}" host="${2:?missing host}" node="${3:?missing node}" report="${4:?missing report}" tmp="${5:?missing tmp}"
+  local now summary failures meaning action
+  now="$(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+  summary="$(watch_results_summary "$tmp")"
+  [[ -n "$summary" ]] || summary="- No result lines captured"
+
+  if [[ "$status" == "PASS" ]]; then
+    meaning="All automated security, config drift, service health, and failed-service checks completed successfully."
+    cat <<EOF
+[POOLY SERVER GUARD PASS]
+Node: $node
+Host: $host
+Version: v$VERSION
+Timer: $POOLY_WATCH_ONCALENDAR
+Time: $now
+
+What this is: automated Pooly server security + health watchdog.
+Meaning: $meaning
+
+Checks covered:
+- SSH hardening and admin access
+- Ubuntu/server baseline
+- authorized_keys, sshd policy, and UFW drift
+- Pooly/mining services and failed systemd units
+- GitHub self-update check
+
+Results:
+$summary
+
+Report: $report
+EOF
+  else
+    failures="$(watch_failure_summary "$tmp")"
+    [[ -n "$failures" ]] || failures="No specific FAIL/WARN lines were captured. Open the full report path below."
+    action="Review the failure summary and open the report path on the affected server."
+    cat <<EOF
+[POOLY SERVER GUARD FAIL]
+Node: $node
+Host: $host
+Version: v$VERSION
+Timer: $POOLY_WATCH_ONCALENDAR
+Time: $now
+
+What this is: automated Pooly server security + health watchdog.
+Meaning: one or more guard checks needs attention.
+Action: $action
+
+Failure summary:
+$failures
+
+Results:
+$summary
+
+Report: $report
+EOF
+  fi
+}
+
 guard_watch(){
   clear_self_failed_state
   mkdirs; load_env
@@ -376,12 +449,12 @@ guard_watch(){
   fi
 
   if [[ $failed -ne 0 ]]; then
-    discord_post "Pooly Server Guard FAIL on $host / node $node. Report: $report" || true
+    discord_post "$(discord_watch_message FAIL "$host" "$node" "$report" "$tmp")" || true
     rm -f "$tmp"
     return 1
   fi
 
-  [[ "${POOLY_ALERT_ON_PASS:-0}" == "1" ]] && discord_post "Pooly Server Guard PASS on $host / node $node" || true
+  [[ "${POOLY_ALERT_ON_PASS:-0}" == "1" ]] && discord_post "$(discord_watch_message PASS "$host" "$node" "$report" "$tmp")" || true
   rm -f "$tmp"; return 0
 }
 
