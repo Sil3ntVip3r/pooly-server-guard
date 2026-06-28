@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.4.9
+
+### Changed
+
+- Expanded Discord PASS/FAIL alerts so they are understandable to moderators and non-technical viewers.
+- PASS alerts now include node, host, version, timer cadence, UTC time, what the watchdog is doing, checks covered, result summary, and report path.
+- FAIL alerts now include the same context plus a short failure summary and action guidance.
+
 ## v0.4.8
 
 ### Changed
