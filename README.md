@@ -1,4 +1,4 @@
-# Pooly Server Guard v0.4.8
+# Pooly Server Guard v0.4.9
 
 Defensive hardening, baseline verification, drift detection, self-updating scheduled checks, and optional Discord alerting for the 4 Pooly SSDNodes servers.
 
@@ -25,6 +25,53 @@ Defensive hardening, baseline verification, drift detection, self-updating sched
 - stable report path for root/systemd timer runs
 - configurable systemd timer cadence
 - optional Discord webhook alerts
+
+## New in v0.4.9
+
+v0.4.9 makes Discord alerts more useful for moderators and anyone watching the server-guard channel.
+
+Old alert style:
+
+```text
+Pooly Server Guard PASS on pooly-ssdnodes-001-toronto / node 001
+```
+
+New PASS alert style includes:
+
+```text
+[POOLY SERVER GUARD PASS]
+Node: 001
+Host: pooly-ssdnodes-001-toronto
+Version: v0.4.9
+Timer: *:0/10
+Time: 2026-06-28 03:40:00 UTC
+
+What this is: automated Pooly server security + health watchdog.
+Meaning: All automated security, config drift, service health, and failed-service checks completed successfully.
+
+Checks covered:
+- SSH hardening and admin access
+- Ubuntu/server baseline
+- authorized_keys, sshd policy, and UFW drift
+- Pooly/mining services and failed systemd units
+- GitHub self-update check
+
+Results:
+- UPDATE RESULT: PASS
+- RESULT: PASS
+- BASELINE RESULT: PASS
+- PORT RESULT: PASS
+- KEYS RESULT: PASS
+- SSHD DRIFT RESULT: PASS
+- UFW DRIFT RESULT: PASS
+- SERVICE RESULT: PASS
+- SERVICE HEALTH RESULT: PASS
+- FAILED SERVICES RESULT: PASS
+
+Report: /home/pooly-sil3ntvip3r-admin/GPTlogs/...
+```
+
+FAIL alerts include the same context plus a short failure summary and action guidance.
 
 ## New in v0.4.8
 
