@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-VERSION="0.4.7"
+VERSION="0.4.8"
 SSH_PORT="${SSH_PORT:-6200}"
 ADMIN_USERS=("poolyadmin" "pooly-sil3ntvip3r-admin")
 POOLY_STATE_DIR="${POOLY_STATE_DIR:-/etc/pooly/server-guard-state}"
@@ -14,6 +14,7 @@ POOLY_INSTALL_PATH="${POOLY_INSTALL_PATH:-${REPORT_HOME:-$HOME}/GPTlogs/pooly-se
 POOLY_GUARD_AUTO_UPDATE="${POOLY_GUARD_AUTO_UPDATE:-1}"
 POOLY_GUARD_AUTO_UPDATE_BRANCH="${POOLY_GUARD_AUTO_UPDATE_BRANCH:-main}"
 POOLY_PORT_STRICT_BASELINE="${POOLY_PORT_STRICT_BASELINE:-0}"
+POOLY_WATCH_ONCALENDAR="${POOLY_WATCH_ONCALENDAR:-*:0/10}"
 SUDO=""
 [[ ${EUID:-$(id -u)} -eq 0 ]] || SUDO="sudo"
 
@@ -110,6 +111,7 @@ version_info(){
   echo "Installed script path:    ${BASH_SOURCE[0]:-$POOLY_INSTALL_PATH}"
   echo "Configured install path:  $POOLY_INSTALL_PATH"
   echo "Configured repo path:     $POOLY_REPO_DIR"
+  echo "Configured timer:         $POOLY_WATCH_ONCALENDAR"
   if [[ -d "$POOLY_REPO_DIR/.git" ]]; then
     run_as_report_owner git -C "$POOLY_REPO_DIR" rev-parse --short HEAD 2>/dev/null | awk '{print "Repo HEAD:              "$0}' || true
     [[ -f "$POOLY_REPO_DIR/VERSION" ]] && awk '{print "Repo VERSION:           "$0}' "$POOLY_REPO_DIR/VERSION" || true
@@ -389,6 +391,7 @@ discord_test(){ discord_post "Pooly Server Guard Discord test from $(hostname) /
 install_timer(){
   need_sudo
   local script="$POOLY_INSTALL_PATH"
+  load_env
   $SUDO install -d -m 755 -o "$REPORT_OWNER" -g "$REPORT_OWNER" "$REPORT_DIR" 2>/dev/null || true
   $SUDO tee /etc/systemd/system/pooly-server-guard-watch.service >/dev/null <<EOF2
 [Unit]
@@ -403,15 +406,16 @@ Environment=REPORT_OWNER=$REPORT_OWNER
 Environment=REPORT_DIR=$REPORT_DIR
 Environment=POOLY_REPO_DIR=$POOLY_REPO_DIR
 Environment=POOLY_INSTALL_PATH=$POOLY_INSTALL_PATH
+Environment=POOLY_WATCH_ONCALENDAR=$POOLY_WATCH_ONCALENDAR
 WorkingDirectory=$POOLY_REPO_DIR
 ExecStart=$script watch
 EOF2
-  $SUDO tee /etc/systemd/system/pooly-server-guard-watch.timer >/dev/null <<'EOF2'
+  $SUDO tee /etc/systemd/system/pooly-server-guard-watch.timer >/dev/null <<EOF2
 [Unit]
-Description=Run Pooly Server Guard watch every 30 minutes
+Description=Run Pooly Server Guard watch on $POOLY_WATCH_ONCALENDAR
 
 [Timer]
-OnCalendar=*:0/30
+OnCalendar=$POOLY_WATCH_ONCALENDAR
 Persistent=true
 
 [Install]
@@ -419,6 +423,7 @@ WantedBy=timers.target
 EOF2
   $SUDO systemctl daemon-reload
   $SUDO systemctl enable --now pooly-server-guard-watch.timer
+  $SUDO systemctl restart pooly-server-guard-watch.timer
   $SUDO systemctl status pooly-server-guard-watch.timer --no-pager || true
 }
 
@@ -452,6 +457,7 @@ Update env:
   POOLY_GUARD_AUTO_UPDATE=1
   POOLY_REPO_DIR=$POOLY_REPO_DIR
   POOLY_INSTALL_PATH=$POOLY_INSTALL_PATH
+  POOLY_WATCH_ONCALENDAR=$POOLY_WATCH_ONCALENDAR
 HELP
 }
 
