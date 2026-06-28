@@ -1,4 +1,4 @@
-# Pooly Server Guard v0.4.5
+# Pooly Server Guard v0.4.6
 
 Defensive hardening, baseline verification, drift detection, self-updating scheduled checks, and optional Discord alerting for the 4 Pooly SSDNodes servers.
 
@@ -24,6 +24,21 @@ Defensive hardening, baseline verification, drift detection, self-updating sched
 - root-safe GitHub self-update using the admin user's SSH deploy-key config
 - stable report path for root/systemd timer runs
 - optional Discord webhook alerts
+
+## New in v0.4.6
+
+v0.4.6 fixes a false SSH `AllowUsers` failure found during the 03:00 scheduled Discord-alert test on Node001.
+
+The failed report showed:
+
+```text
+FAIL: pooly-sil3ntvip3r-admin missing from AllowUsers
+RESULT: FAIL
+```
+
+But the same run also showed `SSHD DRIFT RESULT: PASS`, meaning the effective sshd policy had not actually changed. The journal also showed a broken-pipe warning from the old `echo "$sshdT" | grep -q ...` check.
+
+v0.4.6 now uses pipe-safe checks for SSH policy validation, preventing intermittent false failures under `set -o pipefail`.
 
 ## New in v0.4.5
 
