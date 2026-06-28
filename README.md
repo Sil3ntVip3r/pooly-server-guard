@@ -1,4 +1,4 @@
-# Pooly Server Guard v0.4.7
+# Pooly Server Guard v0.4.8
 
 Defensive hardening, baseline verification, drift detection, self-updating scheduled checks, and optional Discord alerting for the 4 Pooly SSDNodes servers.
 
@@ -23,149 +23,55 @@ Defensive hardening, baseline verification, drift detection, self-updating sched
 - self-update check from the local GitHub clone during scheduled `watch`
 - root-safe GitHub self-update using the admin user's SSH deploy-key config
 - stable report path for root/systemd timer runs
+- configurable systemd timer cadence
 - optional Discord webhook alerts
 
-## New in v0.4.7
+## New in v0.4.8
 
-v0.4.7 fixes `AllowUsers` parsing when sshd reports the effective policy across multiple `allowusers` lines.
+v0.4.8 changes the default scheduled watch timer from every 30 minutes to every 10 minutes for live flow testing and faster GitHub self-update pickup while actively fixing the guard.
 
-The v0.4.6 pipe-safe check fixed one broken-pipe issue, but the first Node001 test then showed:
-
-```text
-FAIL: poolyadmin missing from AllowUsers
-```
-
-while `SSHD DRIFT RESULT` remained `PASS`. That means the effective sshd policy still matched the saved baseline, but the new verifier was too newline-sensitive.
-
-v0.4.7 now checks each allowed admin user as an exact token with `awk`, so multiple `allowusers` lines are handled correctly.
-
-## New in v0.4.6
-
-v0.4.6 fixes a false SSH `AllowUsers` failure found during the 03:00 scheduled Discord-alert test on Node001.
-
-The failed report showed:
+Default timer:
 
 ```text
-FAIL: pooly-sil3ntvip3r-admin missing from AllowUsers
-RESULT: FAIL
+OnCalendar=*:0/10
 ```
 
-But the same run also showed `SSHD DRIFT RESULT: PASS`, meaning the effective sshd policy had not actually changed. The journal also showed a broken-pipe warning from the old `echo "$sshdT" | grep -q ...` check.
-
-v0.4.6 now uses pipe-safe checks for SSH policy validation, preventing intermittent false failures under `set -o pipefail`.
-
-## New in v0.4.5
-
-v0.4.5 handles a stale self-failure state discovered after upgrading Node004.
-
-The 02:00 scheduled run failed under v0.4.3 because root could not use the admin deploy-key SSH alias. After v0.4.4 fixed that, `systemctl --failed` still showed the old `pooly-server-guard-watch.service` failure until reset.
-
-v0.4.5 now:
-
-- clears stale `pooly-server-guard-watch.service` failed state before checks
-- adds a `failed-services` command
-- reports `FAILED SERVICES RESULT: PASS/FAIL`
-- makes real failed systemd units fail `watch`
-
-Manual check:
+The timer cadence is configurable with:
 
 ```bash
-sudo ~/GPTlogs/pooly-server-guard.sh failed-services
+POOLY_WATCH_ONCALENDAR="*:0/10"
 ```
 
-## New in v0.4.4
-
-v0.4.4 fixes a root/systemd self-update issue discovered on Node004.
-
-When the timer runs as root, Git commands must still use the admin user's deploy-key SSH config. v0.4.4+ runs Git operations as `REPORT_OWNER`, which defaults to:
-
-```text
-pooly-sil3ntvip3r-admin
-```
-
-This fixes failures like:
-
-```text
-ssh: Could not resolve hostname github-pooly-guard-node004
-fatal: Could not read from remote repository.
-UPDATE RESULT: FAIL
-```
-
-## New in v0.4.3
-
-### Self-updating scheduled checks
-
-`watch` runs a GitHub update check before the normal guard checks.
-
-By default it uses:
+To later go back to 30 minutes:
 
 ```bash
-POOLY_GUARD_AUTO_UPDATE=1
-POOLY_GUARD_AUTO_UPDATE_BRANCH=main
-POOLY_REPO_DIR=/home/pooly-sil3ntvip3r-admin/GPTrepos/pooly-server-guard
-POOLY_INSTALL_PATH=/home/pooly-sil3ntvip3r-admin/GPTlogs/pooly-server-guard.sh
+POOLY_WATCH_ONCALENDAR="*:0/30"
+sudo ~/GPTlogs/pooly-server-guard.sh install-watch-timer
 ```
 
-If the local repo is behind `origin/main`, the scheduled run fetches, resets to the latest `main`, and refreshes the installed script.
+## Recent fixes
 
-Run manually:
+### v0.4.7
 
-```bash
-sudo ~/GPTlogs/pooly-server-guard.sh self-update
-```
+Fixed `AllowUsers` parsing when sshd reports the effective policy across multiple `allowusers` lines. The verifier now checks each allowed admin user as an exact token with `awk`.
 
-### Service health catches auto-restart loops
+### v0.4.6
 
-`systemctl --failed` does not catch every broken service. During the Node002/Node003/Node004 cleanup, `coin-kerrigan.service` and `coin-neoxa.service` could be stuck in:
+Fixed a false SSH `AllowUsers` failure caused by `echo "$sshdT" | grep -q ...` under `set -o pipefail`.
 
-```text
-ActiveState=activating
-SubState=auto-restart
-Result=exit-code
-```
+### v0.4.5
 
-v0.4.3+ includes `service-health` in `watch`, so auto-restart loops fail the guard check.
+Added `failed-services`, `FAILED SERVICES RESULT: PASS/FAIL`, and cleanup for stale `pooly-server-guard-watch.service` failed state.
 
-Run manually:
+### v0.4.4
 
-```bash
-sudo ~/GPTlogs/pooly-server-guard.sh service-health
-```
+Fixed root/systemd self-update Git operations by running Git as `REPORT_OWNER` so each node can use the admin user's deploy-key SSH config.
 
-### Stable report location
+### v0.4.3
 
-Timer runs execute as root, but reports now stay under the admin user path by default:
+Added `self-update`, automatic update checks during `watch`, `service-health`, auto-restart detection, and stable root/systemd report paths.
 
-```text
-/home/pooly-sil3ntvip3r-admin/GPTlogs
-```
-
-The timer unit sets:
-
-```ini
-Environment=REPORT_OWNER=pooly-sil3ntvip3r-admin
-Environment=REPORT_DIR=/home/pooly-sil3ntvip3r-admin/GPTlogs
-Environment=POOLY_REPO_DIR=/home/pooly-sil3ntvip3r-admin/GPTrepos/pooly-server-guard
-Environment=POOLY_INSTALL_PATH=/home/pooly-sil3ntvip3r-admin/GPTlogs/pooly-server-guard.sh
-```
-
-## Recovery notes learned from rollout
-
-See:
-
-```text
-docs/POOLY_NODE_RECOVERY_NOTES.md
-```
-
-That file documents:
-
-- Kerrigan Plan-X / sapling cache corruption
-- Kerrigan `-resetchainstate` recovery
-- Neoxa zero-byte/bad `sporks.dat` recovery
-- why `systemctl --failed` is not enough
-- final all-node timer proof workflow
-
-## GitHub install
+## GitHub install/update
 
 Recommended server path:
 
@@ -177,7 +83,7 @@ cd pooly-server-guard
 bash install-local.sh
 ```
 
-If the repo is already cloned:
+If already cloned:
 
 ```bash
 cd ~/GPTrepos/pooly-server-guard
@@ -192,8 +98,6 @@ bash install-local.sh
 ```
 
 ## First safe test sequence
-
-Run on each node after installing:
 
 ```bash
 ~/GPTlogs/pooly-server-guard.sh verify
@@ -234,6 +138,7 @@ POOLY_ALERT_ON_PASS=0
 POOLY_WATCH_WARN_UPDATES=0
 POOLY_WATCH_WARN_REBOOT=1
 POOLY_WATCH_WARN_UFW_DRIFT=1
+POOLY_WATCH_ONCALENDAR="*:0/10"
 ```
 
 Lock down permissions:
@@ -251,8 +156,6 @@ sudo ~/GPTlogs/pooly-server-guard.sh discord-test
 
 ## Enable scheduled checks
 
-Only after manual `watch` passes:
-
 ```bash
 sudo ~/GPTlogs/pooly-server-guard.sh install-watch-timer
 systemctl list-timers --all | grep pooly-server-guard
@@ -266,8 +169,6 @@ sudo ~/GPTlogs/pooly-server-guard.sh uninstall-watch-timer
 ```
 
 ## SSH lockdown preview
-
-This does not change firewall rules. It only prints commands to review:
 
 ```bash
 sudo ~/GPTlogs/pooly-server-guard.sh ssh-lockdown-preview
