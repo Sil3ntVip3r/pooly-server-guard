@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-VERSION="0.5.0-alpha3.2"
+VERSION="0.5.0-alpha3.3"
 SSH_PORT="${SSH_PORT:-6200}"
 ADMIN_USERS=("poolyadmin" "pooly-sil3ntvip3r-admin")
 POOLY_STATE_DIR="${POOLY_STATE_DIR:-/etc/pooly/server-guard-state}"
@@ -169,6 +169,43 @@ report_prune(){
   return 0
 }
 
+memory_pressure_active(){
+  load_env; health_defaults
+  local ram_pct swap_total swap_free swap_pct=0
+  ram_pct="$(awk '/MemTotal:/{t=$2}/MemAvailable:/{a=$2} END{if(t>0) printf "%.0f", ((t-a)*100)/t; else print 0}' /proc/meminfo 2>/dev/null)"
+  ram_pct="${ram_pct:-0}"
+  if [[ "$ram_pct" =~ ^[0-9]+$ && "$ram_pct" -ge "${POOLY_RAM_WARN_PCT:-85}" ]]; then return 0; fi
+  read -r swap_total swap_free < <(awk '/SwapTotal:/{t=$2}/SwapFree:/{f=$2} END{print t+0, f+0}' /proc/meminfo 2>/dev/null)
+  if [[ "${swap_total:-0}" -gt 0 ]]; then
+    swap_pct="$(awk -v t="$swap_total" -v f="$swap_free" 'BEGIN{printf "%.0f", ((t-f)*100)/t}')"
+    if [[ "$swap_pct" =~ ^[0-9]+$ && "$swap_pct" -ge "${POOLY_SWAP_WARN_PCT:-20}" ]]; then return 0; fi
+  fi
+  return 1
+}
+
+memory_diagnostics(){
+  section "MEMORY PRESSURE DETAILS"
+  echo "Reason: RAM or swap crossed a warning/fail threshold, so alpha3.3 captured process evidence."
+  echo "Snapshot UTC: $(date -u)"
+  echo
+  echo "FREE -H"
+  free -h || true
+  echo
+  echo "MEMINFO SUMMARY"
+  awk '/MemTotal|MemFree|MemAvailable|Buffers|Cached|SwapCached|SwapTotal|SwapFree|Slab|SReclaimable|SUnreclaim|Committed_AS|CommitLimit/ {print}' /proc/meminfo 2>/dev/null || true
+  echo
+  echo "TOP MEMORY PROCESSES BY RSS"
+  ps -eo pid,ppid,user,comm,%mem,%cpu,rss,vsz,etime,args --sort=-rss 2>/dev/null | head -25 || true
+  echo
+  echo "TOP POOLY/COIN MEMORY PROCESSES"
+  ps -eo pid,ppid,user,comm,%mem,%cpu,rss,vsz,etime,args --sort=-rss 2>/dev/null | awk 'NR==1 || /\/opt\/pooly|Miningcore|coin-|buckd|ycashd|zerod|firod|ravend|bitcoinzd|neoxad|kerrigand|gemlink/ {print}' | head -30 || true
+  echo
+  echo "KERNEL OOM CHECK - LAST 24 HOURS"
+  journalctl -k --since "24 hours ago" --no-pager 2>/dev/null | grep -Ei 'oom|out of memory|killed process|memory allocation|page allocation|segfault' | tail -40 || true
+  echo
+  echo "MEMORY DIAGNOSTIC RESULT: PASS"
+}
+
 discord_post(){
   load_env
   [[ "${POOLY_DISCORD_ENABLED:-0}" == "1" ]] || return 0
@@ -243,6 +280,7 @@ version_info(){
   echo "Configured timer:         $POOLY_WATCH_ONCALENDAR"
   echo "Configured lock file:     $POOLY_LOCK_FILE"
   echo "Report pruning:          ${POOLY_REPORT_PRUNE_ENABLED:-1}, ${POOLY_REPORT_RETENTION_DAYS:-14} day(s), max ${POOLY_REPORT_MAX_FILES:-1000} file(s)"
+  echo "Memory diagnostics:      RAM >= ${POOLY_RAM_WARN_PCT:-85}% or swap >= ${POOLY_SWAP_WARN_PCT:-20}%"
   if [[ -d "$POOLY_REPO_DIR/.git" ]]; then
     run_as_report_owner git -C "$POOLY_REPO_DIR" rev-parse --short HEAD 2>/dev/null | awk '{print "Repo HEAD:              "$0}' || true
     [[ -f "$POOLY_REPO_DIR/VERSION" ]] && awk '{print "Repo VERSION:           "$0}' "$POOLY_REPO_DIR/VERSION" || true
@@ -343,7 +381,7 @@ server_health(){
 
 failed_services_check(){ section "FAILED SERVICES"; clear_self_failed_state; local out; out="$(systemctl --failed --no-pager 2>/dev/null || true)"; printf '%s\n' "$out"; if printf '%s\n' "$out" | grep -Eq '^●[[:space:]]+'; then echo "FAILED SERVICES RESULT: FAIL"; return 1; fi; echo "FAILED SERVICES RESULT: PASS"; return 0; }
 
-health(){ version_info; section "POOLY HEALTH AUDIT"; echo "Host: $(hostname)"; echo "Node: $(node_id)"; echo "UTC:  $(date -u)"; section "OS / KERNEL / UPTIME"; lsb_release -a 2>/dev/null || true; uname -a; uptime; section "DISK / INODES"; df -hT; echo; df -ih; section "MEMORY / SWAP"; free -h; swapon --show || true; server_health || true; report_prune || true; failed_services_check || true; section "RUNNING POOLY SERVICES"; systemctl list-units --type=service --state=running --no-pager | egrep 'coin-|miningcore|nginx|redis|fail2ban|chrony|netdata|push-agent|pm2' || true; section "ALL POOLY SERVICES"; systemctl list-units --type=service --all --no-pager | egrep 'coin-|miningcore|nginx|redis|fail2ban|chrony|netdata|push-agent|pm2' || true; section "LISTENING PORTS"; ss -lntu || true; }
+health(){ version_info; section "POOLY HEALTH AUDIT"; echo "Host: $(hostname)"; echo "Node: $(node_id)"; echo "UTC:  $(date -u)"; section "OS / KERNEL / UPTIME"; lsb_release -a 2>/dev/null || true; uname -a; uptime; section "DISK / INODES"; df -hT; echo; df -ih; section "MEMORY / SWAP"; free -h; swapon --show || true; server_health || true; report_prune || true; memory_diagnostics || true; failed_services_check || true; section "RUNNING POOLY SERVICES"; systemctl list-units --type=service --state=running --no-pager | egrep 'coin-|miningcore|nginx|redis|fail2ban|chrony|netdata|push-agent|pm2' || true; section "ALL POOLY SERVICES"; systemctl list-units --type=service --all --no-pager | egrep 'coin-|miningcore|nginx|redis|fail2ban|chrony|netdata|push-agent|pm2' || true; section "LISTENING PORTS"; ss -lntu || true; }
 
 init_state(){ need_sudo; $SUDO install -d -m 700 "$POOLY_STATE_DIR"; current_ports | $SUDO tee "$POOLY_STATE_DIR/ports.txt" >/dev/null; key_fingerprints | $SUDO tee "$POOLY_STATE_DIR/keys.txt" >/dev/null; sshd_policy | $SUDO tee "$POOLY_STATE_DIR/sshd.txt" >/dev/null; ufw_rules | $SUDO tee "$POOLY_STATE_DIR/ufw.txt" >/dev/null; current_services | $SUDO tee "$POOLY_STATE_DIR/services.txt" >/dev/null; echo "$VERSION" | $SUDO tee "$POOLY_STATE_DIR/guard-version.txt" >/dev/null; echo "Saved known-good state in $POOLY_STATE_DIR"; }
 
@@ -371,15 +409,19 @@ service_health(){
   [[ $failed -eq 0 ]] && { echo "SERVICE HEALTH RESULT: PASS"; return 0; } || { echo "SERVICE HEALTH RESULT: FAIL"; return 1; }
 }
 
-watch_results_summary(){ local file="${1:?missing report tmp}"; grep -E '^(LOCK RESULT|UPDATE RESULT|RESULT|BASELINE RESULT|SERVER HEALTH RESULT|REPORT PRUNE RESULT|PORT RESULT|KEYS RESULT|SSHD DRIFT RESULT|UFW DRIFT RESULT|SERVICE RESULT|SERVICE HEALTH RESULT|FAILED SERVICES RESULT|WATCH RESULT):' "$file" | sed 's/^/- /' | head -24; }
+watch_results_summary(){ local file="${1:?missing report tmp}"; grep -E '^(LOCK RESULT|UPDATE RESULT|RESULT|BASELINE RESULT|SERVER HEALTH RESULT|REPORT PRUNE RESULT|MEMORY DIAGNOSTIC RESULT|PORT RESULT|KEYS RESULT|SSHD DRIFT RESULT|UFW DRIFT RESULT|SERVICE RESULT|SERVICE HEALTH RESULT|FAILED SERVICES RESULT|WATCH RESULT):' "$file" | sed 's/^/- /' | head -24; }
 watch_health_summary(){ local file="${1:?missing report tmp}"; grep -E '^(DISK /|DISK WORST|INODES /|RAM:|SWAP:|LOAD:|UPTIME:|REBOOT REQUIRED:|JOURNAL SIZE:|GPTLOGS SIZE:)' "$file" | sed 's/^/- /' | head -12 || true; }
-watch_issue_summary(){ local file="${1:?missing report tmp}"; { grep -E '^(DISK /|DISK WORST|INODES /|RAM:|SWAP:|LOAD:|REBOOT REQUIRED:|JOURNAL SIZE:|GPTLOGS SIZE:).*(— WARN|— FAIL)' "$file" | sed 's/^/- /'; grep -E '^(LOCK RESULT|UPDATE RESULT|RESULT|BASELINE RESULT|SERVER HEALTH RESULT|REPORT PRUNE RESULT|PORT RESULT|KEYS RESULT|SSHD DRIFT RESULT|UFW DRIFT RESULT|SERVICE RESULT|SERVICE HEALTH RESULT|FAILED SERVICES RESULT|WATCH RESULT): (WARN|FAIL|SKIP|SKIP_LOCKED)' "$file" | sed 's/^/- /'; grep -E '^(FAIL:|WARN:|ERROR:)' "$file" | sed 's/^/- /'; } | awk '!seen[$0]++' | head -12; }
-watch_issue_action(){ local file="${1:?missing report tmp}"; if grep -Eq '^(DISK /|DISK WORST|JOURNAL SIZE:|GPTLOGS SIZE:).*(— WARN|— FAIL)' "$file"; then echo "Storage/logs crossed a threshold. Check disk, journal size, and GPTlogs before services are affected."; elif grep -Eq '^(RAM:|SWAP:|LOAD:).*(— WARN|— FAIL)' "$file"; then echo "Resource pressure crossed a threshold. Check active processes and Pooly/coin service load."; elif grep -Eq '^REBOOT REQUIRED: yes' "$file"; then echo "Server reports reboot required. Plan a controlled reboot window when safe."; elif grep -Eq 'REPORT PRUNE RESULT: WARN|REPORT PRUNE RESULT: FAIL' "$file"; then echo "Report pruning needs attention. Review REPORT_DIR safety checks and GPTlogs report counts."; elif grep -Eq 'SERVICE HEALTH RESULT: FAIL|FAILED SERVICES RESULT: FAIL|SERVICE RESULT: FAIL' "$file"; then echo "A Pooly/system service check failed. Review service health and failed systemd units on this node."; elif grep -Eq 'SSHD DRIFT RESULT: FAIL|KEYS RESULT: FAIL|UFW DRIFT RESULT: FAIL|RESULT: FAIL' "$file"; then echo "A security or access-control check failed. Review SSH, keys, sudo, and firewall drift immediately."; else echo "Review the issue summary and open the report path on the affected server."; fi; }
+watch_issue_summary(){ local file="${1:?missing report tmp}"; { grep -E '^(DISK /|DISK WORST|INODES /|RAM:|SWAP:|LOAD:|REBOOT REQUIRED:|JOURNAL SIZE:|GPTLOGS SIZE:).*(— WARN|— FAIL)' "$file" | sed 's/^/- /'; grep -E '^(LOCK RESULT|UPDATE RESULT|RESULT|BASELINE RESULT|SERVER HEALTH RESULT|REPORT PRUNE RESULT|MEMORY DIAGNOSTIC RESULT|PORT RESULT|KEYS RESULT|SSHD DRIFT RESULT|UFW DRIFT RESULT|SERVICE RESULT|SERVICE HEALTH RESULT|FAILED SERVICES RESULT|WATCH RESULT): (WARN|FAIL|SKIP|SKIP_LOCKED)' "$file" | sed 's/^/- /'; grep -E '^(FAIL:|WARN:|ERROR:)' "$file" | sed 's/^/- /'; } | awk '!seen[$0]++' | head -12; }
+watch_memory_evidence(){ local file="${1:?missing report tmp}"; local top; if ! grep -Eq '^(RAM:|SWAP:).*(— WARN|— FAIL)' "$file"; then return 0; fi; top="$(awk '/^TOP MEMORY PROCESSES BY RSS/{getline; getline; print; exit}' "$file")"; [[ -n "$top" ]] && printf 'Top memory process:\n%s\n' "$top"; }
+watch_issue_action(){ local file="${1:?missing report tmp}"; if grep -Eq '^(DISK /|DISK WORST|JOURNAL SIZE:|GPTLOGS SIZE:).*(— WARN|— FAIL)' "$file"; then echo "Storage/logs crossed a threshold. Check disk, journal size, and GPTlogs before services are affected."; elif grep -Eq '^(RAM:|SWAP:|LOAD:).*(— WARN|— FAIL)' "$file"; then echo "Resource pressure crossed a threshold. Alpha3.3 captured top memory/process evidence in the report."; elif grep -Eq '^REBOOT REQUIRED: yes' "$file"; then echo "Server reports reboot required. Plan a controlled reboot window when safe."; elif grep -Eq 'REPORT PRUNE RESULT: WARN|REPORT PRUNE RESULT: FAIL' "$file"; then echo "Report pruning needs attention. Review REPORT_DIR safety checks and GPTlogs report counts."; elif grep -Eq 'SERVICE HEALTH RESULT: FAIL|FAILED SERVICES RESULT: FAIL|SERVICE RESULT: FAIL' "$file"; then echo "A Pooly/system service check failed. Review service health and failed systemd units on this node."; elif grep -Eq 'SSHD DRIFT RESULT: FAIL|KEYS RESULT: FAIL|UFW DRIFT RESULT: FAIL|RESULT: FAIL' "$file"; then echo "A security or access-control check failed. Review SSH, keys, sudo, and firewall drift immediately."; else echo "Review the issue summary and open the report path on the affected server."; fi; }
 
 discord_watch_message(){
   local status="${1:?missing status}" host="${2:?missing host}" node="${3:?missing node}" report="${4:?missing report}" tmp="${5:?missing tmp}"
-  local now summary issues health meaning action
-  now="$(date -u +'%Y-%m-%d %H:%M:%S UTC')"; summary="$(watch_results_summary "$tmp")"; health="$(watch_health_summary "$tmp")"; [[ -n "$summary" ]] || summary="- No result lines captured"; [[ -n "$health" ]] || health="- No health lines captured"
+  local now summary issues health meaning action memory memory_block
+  now="$(date -u +'%Y-%m-%d %H:%M:%S UTC')"; summary="$(watch_results_summary "$tmp")"; health="$(watch_health_summary "$tmp")"; memory="$(watch_memory_evidence "$tmp")"; [[ -n "$summary" ]] || summary="- No result lines captured"; [[ -n "$health" ]] || health="- No health lines captured"
+  if [[ -n "$memory" ]]; then memory_block="
+Memory evidence:
+$memory"; else memory_block=""; fi
   case "$status" in
     PASS)
       meaning="server security, config drift, services, and health checks are clean."
@@ -418,7 +460,7 @@ Warning summary:
 $issues
 
 Health:
-$health
+$health$memory_block
 
 Action: $action
 
@@ -442,7 +484,7 @@ Failure summary:
 $issues
 
 Health:
-$health
+$health$memory_block
 
 Results:
 $summary
@@ -460,7 +502,7 @@ guard_watch(){
   if [[ "$lock_rc" == "75" ]]; then return 0; elif [[ "$lock_rc" != "0" ]]; then return "$lock_rc"; fi
   local tmp failed=0 warned=0 host node report update_rc=0 outcome="PASS"
   host="$(hostname)"; node="$(node_id)"; tmp="$(mktemp)"
-  { echo "LOCK RESULT: PASS"; self_update || update_rc=$?; report_prune || true; verify || true; baseline_verify || true; server_health || true; port_audit || true; keys_drift || true; sshd_drift || true; [[ "${POOLY_WATCH_WARN_UFW_DRIFT:-1}" == "1" ]] && ufw_drift || true; services_drift || true; service_health || true; failed_services_check || true; } | tee "$tmp"
+  { echo "LOCK RESULT: PASS"; self_update || update_rc=$?; report_prune || true; verify || true; baseline_verify || true; server_health || true; if memory_pressure_active; then memory_diagnostics || true; fi; port_audit || true; keys_drift || true; sshd_drift || true; [[ "${POOLY_WATCH_WARN_UFW_DRIFT:-1}" == "1" ]] && ufw_drift || true; services_drift || true; service_health || true; failed_services_check || true; } | tee "$tmp"
   if [[ "$update_rc" != "0" ]] || grep -Eq 'UPDATE RESULT: FAIL|RESULT: FAIL|DRIFT RESULT: FAIL|PORT RESULT: FAIL|KEYS RESULT: FAIL|SERVICE RESULT: FAIL|SERVICE HEALTH RESULT: FAIL|FAILED SERVICES RESULT: FAIL|SERVER HEALTH RESULT: FAIL|REPORT PRUNE RESULT: FAIL' "$tmp"; then failed=1; outcome="FAIL"; elif grep -Eq 'SERVER HEALTH RESULT: WARN|REPORT PRUNE RESULT: WARN|WARN:' "$tmp"; then warned=1; outcome="WARN"; fi
   echo "WATCH RESULT: $outcome" | tee -a "$tmp"
   report="$REPORT_DIR/pooly-server-guard-watch-$host-$(date -u +%Y%m%d-%H%M%S).txt"; cp "$tmp" "$report"; [[ ${EUID:-$(id -u)} -eq 0 ]] && chown "$REPORT_OWNER:$REPORT_OWNER" "$report" 2>/dev/null || true
@@ -508,7 +550,7 @@ usage(){ cat <<HELP
 Pooly Server Guard v$VERSION
 Commands:
   verify | baseline-verify | health | save-report
-  init-state | watch | self-update | server-health | report-prune
+  init-state | watch | self-update | server-health | report-prune | memory-diagnostics
   port-audit | keys-drift | sshd-drift | ufw-drift | services-drift | service-health | failed-services
   discord-test | install-watch-timer | uninstall-watch-timer
 HELP
@@ -524,6 +566,7 @@ case "$cmd" in
   self-update) self_update ;;
   server-health) server_health ;;
   report-prune) report_prune ;;
+  memory-diagnostics) memory_diagnostics ;;
   port-audit) port_audit ;;
   keys-drift) keys_drift ;;
   sshd-drift) sshd_drift ;;
