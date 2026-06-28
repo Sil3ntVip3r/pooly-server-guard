@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-VERSION="0.4.6"
+VERSION="0.4.7"
 SSH_PORT="${SSH_PORT:-6200}"
 ADMIN_USERS=("poolyadmin" "pooly-sil3ntvip3r-admin")
 POOLY_STATE_DIR="${POOLY_STATE_DIR:-/etc/pooly/server-guard-state}"
@@ -199,18 +199,21 @@ self_update(){
 
 verify(){
   section "POOLY SERVER GUARD VERIFY"
-  local failed=0 ports sshdT root_count allow_line groups
+  local failed=0 ports sshdT root_count groups u
   ports="$(sshd_policy | awk '$1=="port"{print $2}' | xargs echo)"
   sshdT="$(sshd_policy)"
-  allow_line=" $(awk '$1=="allowusers"{print}' <<< "$sshdT") "
   echo "SSH ports: $ports"
   [[ "$ports" == "$SSH_PORT" ]] && echo "PASS: SSH effective port is $SSH_PORT only" || { echo "FAIL: SSH effective port is not $SSH_PORT only"; failed=1; }
   ss -H -ltn 2>/dev/null | awk '{print $4}' | grep -Eq ':(22)$' && { echo "FAIL: sshd port 22 listener found"; failed=1; } || echo "PASS: no sshd port 22 listener found"
   ss -H -ltn 2>/dev/null | awk '{print $4}' | grep -Eq ":${SSH_PORT}$" && echo "PASS: sshd port $SSH_PORT listener found" || { echo "FAIL: sshd port $SSH_PORT listener missing"; failed=1; }
-  grep -qx 'permitrootlogin no' <<< "$sshdT" && echo "PASS: root SSH disabled" || { echo "FAIL: root SSH not disabled"; failed=1; }
-  grep -qx 'passwordauthentication no' <<< "$sshdT" && echo "PASS: password SSH disabled" || { echo "FAIL: password SSH not disabled"; failed=1; }
-  grep -qx 'kbdinteractiveauthentication no' <<< "$sshdT" && echo "PASS: keyboard-interactive SSH disabled" || { echo "FAIL: keyboard-interactive SSH not disabled"; failed=1; }
-  for u in "${ADMIN_USERS[@]}"; do [[ "$allow_line" == *" $u "* ]] && echo "PASS: $u allowed" || { echo "FAIL: $u missing from AllowUsers"; failed=1; }; done
+  awk '$1=="permitrootlogin" && $2=="no"{found=1} END{exit found ? 0 : 1}' <<< "$sshdT" && echo "PASS: root SSH disabled" || { echo "FAIL: root SSH not disabled"; failed=1; }
+  awk '$1=="passwordauthentication" && $2=="no"{found=1} END{exit found ? 0 : 1}' <<< "$sshdT" && echo "PASS: password SSH disabled" || { echo "FAIL: password SSH not disabled"; failed=1; }
+  awk '$1=="kbdinteractiveauthentication" && $2=="no"{found=1} END{exit found ? 0 : 1}' <<< "$sshdT" && echo "PASS: keyboard-interactive SSH disabled" || { echo "FAIL: keyboard-interactive SSH not disabled"; failed=1; }
+  for u in "${ADMIN_USERS[@]}"; do
+    awk -v user="$u" '$1=="allowusers"{for(i=2;i<=NF;i++) if($i==user) found=1} END{exit found ? 0 : 1}' <<< "$sshdT" \
+      && echo "PASS: $u allowed" \
+      || { echo "FAIL: $u missing from AllowUsers"; failed=1; }
+  done
   root_count="$($SUDO sh -c 'test -f /root/.ssh/authorized_keys && awk "NF && \$1 !~ /^#/" /root/.ssh/authorized_keys | wc -l || echo 0' 2>/dev/null | tail -1)"
   [[ "$root_count" == "0" ]] && echo "PASS: root authorized_keys empty" || { echo "FAIL: root authorized_keys has $root_count active key(s)"; failed=1; }
   for u in "${ADMIN_USERS[@]}"; do groups="$(id -nG "$u" 2>/dev/null || true)"; [[ " $groups " == *" sudo "* ]] && echo "PASS: $u in sudo" || { echo "FAIL: $u not in sudo"; failed=1; }; done
