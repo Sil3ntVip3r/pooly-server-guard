@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.4.6
+
+### Fixed
+
+- Fixed a false `AllowUsers` failure caused by `echo "$sshdT" | grep -q` under `set -o pipefail`.
+- Replaced the SSH policy checks with pipe-safe here-string and string matching checks.
+- Prevents intermittent false alerts like `FAIL: pooly-sil3ntvip3r-admin missing from AllowUsers` when `SSHD DRIFT RESULT` is still passing.
+
 ## v0.4.5
 
 ### Added
