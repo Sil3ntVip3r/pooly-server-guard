@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.4.5
+
+### Added
+
+- Added `failed-services` command.
+- `watch` now reports `FAILED SERVICES RESULT: PASS/FAIL`.
+
+### Fixed
+
+- Clears stale `pooly-server-guard-watch.service` failed state before running checks.
+- Prevents an old failed scheduled run from polluting future healthy checks.
+- Failed systemd units now cause `watch` to fail instead of only being printed.
+
 ## v0.4.4
 
 ### Fixed
