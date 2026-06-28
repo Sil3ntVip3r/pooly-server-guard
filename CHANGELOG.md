@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.4.8
+
+### Changed
+
+- Changed the default scheduled watch timer from every 30 minutes to every 10 minutes for live flow testing.
+- Added `POOLY_WATCH_ONCALENDAR`, defaulting to `*:0/10`, so the timer cadence can be changed without editing the script.
+- `install-watch-timer` now writes the selected timer schedule into the systemd timer and restarts the timer after reload.
+
 ## v0.4.7
 
 ### Fixed
