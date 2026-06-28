@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-VERSION="0.4.9"
+VERSION="0.5.0-alpha1"
 SSH_PORT="${SSH_PORT:-6200}"
 ADMIN_USERS=("poolyadmin" "pooly-sil3ntvip3r-admin")
 POOLY_STATE_DIR="${POOLY_STATE_DIR:-/etc/pooly/server-guard-state}"
@@ -45,6 +45,46 @@ mkdirs(){
 
 load_env(){ [[ -f "$POOLY_GUARD_ENV" ]] && source "$POOLY_GUARD_ENV"; }
 json_escape(){ python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'; }
+
+health_defaults(){
+  : "${POOLY_ALERT_ON_WARN:=1}"
+  : "${POOLY_DISK_WARN_PCT:=80}"
+  : "${POOLY_DISK_FAIL_PCT:=90}"
+  : "${POOLY_INODE_WARN_PCT:=80}"
+  : "${POOLY_INODE_FAIL_PCT:=90}"
+  : "${POOLY_RAM_WARN_PCT:=85}"
+  : "${POOLY_RAM_FAIL_PCT:=95}"
+  : "${POOLY_SWAP_WARN_PCT:=20}"
+  : "${POOLY_SWAP_FAIL_PCT:=50}"
+  : "${POOLY_LOAD_WARN_PER_CPU:=2}"
+  : "${POOLY_LOAD_FAIL_PER_CPU:=4}"
+  : "${POOLY_JOURNAL_WARN_MB:=5120}"
+  : "${POOLY_JOURNAL_FAIL_MB:=10240}"
+  : "${POOLY_GPTLOGS_WARN_MB:=1024}"
+  : "${POOLY_GPTLOGS_FAIL_MB:=2048}"
+}
+
+num_status(){
+  local value="$1" warn="$2" fail="$3"
+  awk -v v="$value" -v w="$warn" -v f="$fail" 'BEGIN{if(v>=f)print "FAIL"; else if(v>=w)print "WARN"; else print "PASS"}'
+}
+
+worst_mark(){
+  local new="$1"
+  case "$new" in
+    FAIL) POOLY_WORST_STATUS="FAIL" ;;
+    WARN) [[ "$POOLY_WORST_STATUS" != "FAIL" ]] && POOLY_WORST_STATUS="WARN" ;;
+  esac
+}
+
+status_return(){
+  case "$1" in
+    PASS) return 0 ;;
+    WARN) return 2 ;;
+    FAIL) return 1 ;;
+    *) return 1 ;;
+  esac
+}
 
 discord_post(){
   load_env
@@ -106,6 +146,7 @@ sshd_policy(){ $SUDO sshd -T 2>/dev/null | egrep '^(port|permitrootlogin|pubkeya
 ufw_rules(){ $SUDO ufw status numbered 2>/dev/null | sed 's/[[:space:]]\+$//' || true; }
 
 version_info(){
+  load_env; health_defaults
   section "POOLY SERVER GUARD VERSION"
   echo "Installed script version: $VERSION"
   echo "Installed script path:    ${BASH_SOURCE[0]:-$POOLY_INSTALL_PATH}"
@@ -122,7 +163,7 @@ version_info(){
 
 self_update(){
   section "POOLY SERVER GUARD UPDATE CHECK"
-  load_env
+  load_env; health_defaults
   echo "Running version: $VERSION"
   echo "Auto update: ${POOLY_GUARD_AUTO_UPDATE:-1}"
   echo "Repo dir: $POOLY_REPO_DIR"
@@ -239,6 +280,33 @@ baseline_verify(){
   echo; [[ $failed -eq 0 ]] && echo "BASELINE RESULT: PASS" || echo "BASELINE RESULT: FAIL"; return "$failed"
 }
 
+server_health(){
+  section "POOLY SERVER HEALTH"
+  load_env; health_defaults
+  POOLY_WORST_STATUS="PASS"
+  local pct status worst_pct worst_mount ram_pct swap_pct swap_total swap_free load1 cpus load_per_cpu journal_mb gptlogs_mb uptime_seconds uptime_days
+  echo "Thresholds: disk ${POOLY_DISK_WARN_PCT}/${POOLY_DISK_FAIL_PCT}% warn/fail, RAM ${POOLY_RAM_WARN_PCT}/${POOLY_RAM_FAIL_PCT}%, load per CPU ${POOLY_LOAD_WARN_PER_CPU}/${POOLY_LOAD_FAIL_PER_CPU}"
+  pct="$(df -P / 2>/dev/null | awk 'NR==2{gsub("%","",$5); print $5}')"; pct="${pct:-0}"
+  status="$(num_status "$pct" "$POOLY_DISK_WARN_PCT" "$POOLY_DISK_FAIL_PCT")"; worst_mark "$status"; echo "DISK /: ${pct}% used — $status"
+  read -r worst_pct worst_mount < <(df -P -x tmpfs -x devtmpfs -x squashfs -x overlay 2>/dev/null | awk 'NR>1{gsub("%","",$5); if($5+0>max){max=$5+0; mount=$6}} END{print max+0, mount}')
+  if [[ -n "${worst_mount:-}" && "$worst_mount" != "/" ]]; then status="$(num_status "$worst_pct" "$POOLY_DISK_WARN_PCT" "$POOLY_DISK_FAIL_PCT")"; worst_mark "$status"; echo "DISK WORST: ${worst_mount} ${worst_pct}% used — $status"; fi
+  pct="$(df -Pi / 2>/dev/null | awk 'NR==2{gsub("%","",$5); print $5}')"; pct="${pct:-0}"
+  status="$(num_status "$pct" "$POOLY_INODE_WARN_PCT" "$POOLY_INODE_FAIL_PCT")"; worst_mark "$status"; echo "INODES /: ${pct}% used — $status"
+  ram_pct="$(awk '/MemTotal:/{t=$2}/MemAvailable:/{a=$2} END{if(t>0) printf "%.0f", ((t-a)*100)/t; else print 0}' /proc/meminfo 2>/dev/null)"; ram_pct="${ram_pct:-0}"
+  status="$(num_status "$ram_pct" "$POOLY_RAM_WARN_PCT" "$POOLY_RAM_FAIL_PCT")"; worst_mark "$status"; echo "RAM: ${ram_pct}% pressure — $status"
+  read -r swap_total swap_free < <(awk '/SwapTotal:/{t=$2}/SwapFree:/{f=$2} END{print t+0, f+0}' /proc/meminfo 2>/dev/null)
+  if [[ "${swap_total:-0}" -gt 0 ]]; then swap_pct="$(awk -v t="$swap_total" -v f="$swap_free" 'BEGIN{printf "%.0f", ((t-f)*100)/t}')"; status="$(num_status "$swap_pct" "$POOLY_SWAP_WARN_PCT" "$POOLY_SWAP_FAIL_PCT")"; worst_mark "$status"; echo "SWAP: ${swap_pct}% used — $status"; else echo "SWAP: not configured — PASS"; fi
+  load1="$(awk '{print $1}' /proc/loadavg 2>/dev/null)"; cpus="$(nproc 2>/dev/null || echo 1)"
+  load_per_cpu="$(awk -v l="${load1:-0}" -v c="${cpus:-1}" 'BEGIN{if(c>0) printf "%.2f", l/c; else print "0.00"}')"
+  status="$(num_status "$load_per_cpu" "$POOLY_LOAD_WARN_PER_CPU" "$POOLY_LOAD_FAIL_PER_CPU")"; worst_mark "$status"; echo "LOAD: ${load1:-0} on ${cpus:-1} CPU cores = ${load_per_cpu} per CPU — $status"
+  uptime_seconds="$(awk '{printf "%.0f", $1}' /proc/uptime 2>/dev/null || echo 0)"; uptime_days="$(( ${uptime_seconds:-0} / 86400 ))"; echo "UPTIME: ${uptime_days} day(s) — PASS"
+  if [[ -f /var/run/reboot-required ]]; then worst_mark "WARN"; echo "REBOOT REQUIRED: yes — WARN"; else echo "REBOOT REQUIRED: no — PASS"; fi
+  journal_mb="$(du -sm /var/log/journal /run/log/journal 2>/dev/null | awk '{sum+=$1} END{print sum+0}')"; status="$(num_status "$journal_mb" "$POOLY_JOURNAL_WARN_MB" "$POOLY_JOURNAL_FAIL_MB")"; worst_mark "$status"; echo "JOURNAL SIZE: ${journal_mb}M — $status"
+  [[ -d "$REPORT_DIR" ]] && gptlogs_mb="$(du -sm "$REPORT_DIR" 2>/dev/null | awk '{print $1+0}')" || gptlogs_mb=0
+  status="$(num_status "$gptlogs_mb" "$POOLY_GPTLOGS_WARN_MB" "$POOLY_GPTLOGS_FAIL_MB")"; worst_mark "$status"; echo "GPTLOGS SIZE: ${gptlogs_mb}M — $status"
+  echo; echo "SERVER HEALTH RESULT: $POOLY_WORST_STATUS"; status_return "$POOLY_WORST_STATUS"
+}
+
 failed_services_check(){
   section "FAILED SERVICES"
   clear_self_failed_state
@@ -260,6 +328,7 @@ health(){
   section "REBOOT / UPDATES"; test -f /var/run/reboot-required && cat /var/run/reboot-required || echo "No reboot-required flag"; apt list --upgradable 2>/dev/null || true
   section "DISK / INODES"; df -hT; echo; df -ih
   section "MEMORY / SWAP"; free -h; swapon --show || true
+  server_health || true
   failed_services_check || true
   section "RUNNING POOLY SERVICES"; systemctl list-units --type=service --state=running --no-pager | egrep 'coin-|miningcore|nginx|redis|fail2ban|chrony|netdata|push-agent|pm2' || true
   section "ALL POOLY SERVICES"; systemctl list-units --type=service --all --no-pager | egrep 'coin-|miningcore|nginx|redis|fail2ban|chrony|netdata|push-agent|pm2' || true
@@ -326,7 +395,6 @@ service_health(){
     echo "SERVICE HEALTH RESULT: FAIL"
     return 1
   fi
-
   while read -r svc; do
     [[ -n "$svc" ]] || continue
     active="$(systemctl show "$svc" -p ActiveState --value 2>/dev/null || echo unknown)"
@@ -335,40 +403,39 @@ service_health(){
     nrestarts="$(systemctl show "$svc" -p NRestarts --value 2>/dev/null || echo 0)"
     status="$(systemctl show "$svc" -p ExecMainStatus --value 2>/dev/null || echo 0)"
     printf '%-38s ActiveState=%s SubState=%s Result=%s NRestarts=%s ExecMainStatus=%s\n' "$svc" "$active" "$sub" "$result" "$nrestarts" "$status"
-
     if [[ "$active" != "active" ]]; then failed=1; echo "FAIL: $svc ActiveState is $active"; fi
     if [[ "$sub" == "auto-restart" || "$sub" == "failed" ]]; then failed=1; echo "FAIL: $svc SubState is $sub"; fi
     if [[ "$result" == "exit-code" || "$result" == "signal" || "$result" == "core-dump" || "$result" == "timeout" ]]; then failed=1; echo "FAIL: $svc Result is $result"; fi
     if [[ "$status" != "0" ]]; then failed=1; echo "FAIL: $svc ExecMainStatus is $status"; fi
   done <<< "$units"
-
   [[ $failed -eq 0 ]] && { echo "SERVICE HEALTH RESULT: PASS"; return 0; } || { echo "SERVICE HEALTH RESULT: FAIL"; return 1; }
 }
 
 watch_results_summary(){
   local file="${1:?missing report tmp}"
-  grep -E '^(UPDATE RESULT|RESULT|BASELINE RESULT|PORT RESULT|KEYS RESULT|SSHD DRIFT RESULT|UFW DRIFT RESULT|SERVICE RESULT|SERVICE HEALTH RESULT|FAILED SERVICES RESULT):' "$file" \
-    | sed 's/^/- /' \
-    | head -20
+  grep -E '^(UPDATE RESULT|RESULT|BASELINE RESULT|SERVER HEALTH RESULT|PORT RESULT|KEYS RESULT|SSHD DRIFT RESULT|UFW DRIFT RESULT|SERVICE RESULT|SERVICE HEALTH RESULT|FAILED SERVICES RESULT|WATCH RESULT):' "$file" | sed 's/^/- /' | head -24
+}
+
+watch_health_summary(){
+  local file="${1:?missing report tmp}"
+  grep -E '^(DISK /|DISK WORST|INODES /|RAM:|SWAP:|LOAD:|UPTIME:|REBOOT REQUIRED:|JOURNAL SIZE:|GPTLOGS SIZE:)' "$file" | sed 's/^/- /' | head -12 || true
 }
 
 watch_failure_summary(){
   local file="${1:?missing report tmp}"
-  grep -nE 'FAIL:|WARN:|ERROR:|RESULT: FAIL|DRIFT RESULT: FAIL|SERVICE HEALTH RESULT: FAIL|FAILED SERVICES RESULT: FAIL|UPDATE RESULT: FAIL' "$file" \
-    | head -10 \
-    || true
+  grep -nE 'FAIL:|WARN:|ERROR:|RESULT: WARN|RESULT: FAIL|DRIFT RESULT: FAIL|SERVER HEALTH RESULT: WARN|SERVER HEALTH RESULT: FAIL|SERVICE HEALTH RESULT: FAIL|FAILED SERVICES RESULT: FAIL|UPDATE RESULT: FAIL|WATCH RESULT: WARN|WATCH RESULT: FAIL' "$file" | head -10 || true
 }
 
 discord_watch_message(){
   local status="${1:?missing status}" host="${2:?missing host}" node="${3:?missing node}" report="${4:?missing report}" tmp="${5:?missing tmp}"
-  local now summary failures meaning action
+  local now summary failures health meaning action
   now="$(date -u +'%Y-%m-%d %H:%M:%S UTC')"
-  summary="$(watch_results_summary "$tmp")"
-  [[ -n "$summary" ]] || summary="- No result lines captured"
-
-  if [[ "$status" == "PASS" ]]; then
-    meaning="All automated security, config drift, service health, and failed-service checks completed successfully."
-    cat <<EOF
+  summary="$(watch_results_summary "$tmp")"; health="$(watch_health_summary "$tmp")"
+  [[ -n "$summary" ]] || summary="- No result lines captured"; [[ -n "$health" ]] || health="- No health lines captured"
+  case "$status" in
+    PASS)
+      meaning="server security, config drift, services, and health checks are clean."
+      cat <<EOF
 [POOLY SERVER GUARD PASS]
 Node: $node
 Host: $host
@@ -376,26 +443,45 @@ Version: v$VERSION
 Timer: $POOLY_WATCH_ONCALENDAR
 Time: $now
 
-What this is: automated Pooly server security + health watchdog.
 Meaning: $meaning
 
-Checks covered:
-- SSH hardening and admin access
-- Ubuntu/server baseline
-- authorized_keys, sshd policy, and UFW drift
-- Pooly/mining services and failed systemd units
-- GitHub self-update check
+Health:
+$health
 
 Results:
 $summary
 
 Report: $report
 EOF
-  else
-    failures="$(watch_failure_summary "$tmp")"
-    [[ -n "$failures" ]] || failures="No specific FAIL/WARN lines were captured. Open the full report path below."
-    action="Review the failure summary and open the report path on the affected server."
-    cat <<EOF
+      ;;
+    WARN)
+      failures="$(watch_failure_summary "$tmp")"; [[ -n "$failures" ]] || failures="No specific WARN lines were captured. Open the full report path below."
+      action="Review the warning summary. No hard failure was detected, but this node needs attention."
+      cat <<EOF
+[POOLY SERVER GUARD WARN]
+Node: $node
+Host: $host
+Version: v$VERSION
+Timer: $POOLY_WATCH_ONCALENDAR
+Time: $now
+
+Meaning: server guard found an early warning, but no critical service/security failure.
+
+Warning summary:
+$failures
+
+Health:
+$health
+
+Action: $action
+
+Report: $report
+EOF
+      ;;
+    FAIL|*)
+      failures="$(watch_failure_summary "$tmp")"; [[ -n "$failures" ]] || failures="No specific FAIL/WARN lines were captured. Open the full report path below."
+      action="Review the failure summary and open the report path on the affected server."
+      cat <<EOF
 [POOLY SERVER GUARD FAIL]
 Node: $node
 Host: $host
@@ -403,31 +489,34 @@ Version: v$VERSION
 Timer: $POOLY_WATCH_ONCALENDAR
 Time: $now
 
-What this is: automated Pooly server security + health watchdog.
-Meaning: one or more guard checks needs attention.
+Meaning: one or more server guard checks needs attention.
 Action: $action
 
 Failure summary:
 $failures
+
+Health:
+$health
 
 Results:
 $summary
 
 Report: $report
 EOF
-  fi
+      ;;
+  esac
 }
 
 guard_watch(){
   clear_self_failed_state
-  mkdirs; load_env
-  local tmp failed=0 host node report update_rc=0
+  mkdirs; load_env; health_defaults
+  local tmp failed=0 warned=0 host node report update_rc=0 outcome="PASS"
   host="$(hostname)"; node="$(node_id)"; tmp="$(mktemp)"
-
   {
     self_update || update_rc=$?
     verify || true
     baseline_verify || true
+    server_health || true
     port_audit || true
     keys_drift || true
     sshd_drift || true
@@ -435,25 +524,14 @@ guard_watch(){
     services_drift || true
     service_health || true
     failed_services_check || true
-    if test -f /var/run/reboot-required && [[ "${POOLY_WATCH_WARN_REBOOT:-1}" == "1" ]]; then echo "WARN: reboot required"; fi
   } | tee "$tmp"
-
+  if [[ "$update_rc" != "0" ]] || grep -Eq 'UPDATE RESULT: FAIL|RESULT: FAIL|DRIFT RESULT: FAIL|PORT RESULT: FAIL|KEYS RESULT: FAIL|SERVICE RESULT: FAIL|SERVICE HEALTH RESULT: FAIL|FAILED SERVICES RESULT: FAIL|SERVER HEALTH RESULT: FAIL' "$tmp"; then failed=1; outcome="FAIL"; elif grep -Eq 'SERVER HEALTH RESULT: WARN|WARN:' "$tmp"; then warned=1; outcome="WARN"; fi
+  echo "WATCH RESULT: $outcome" | tee -a "$tmp"
   report="$REPORT_DIR/pooly-server-guard-watch-$host-$(date -u +%Y%m%d-%H%M%S).txt"
   cp "$tmp" "$report"
-  if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
-    chown "$REPORT_OWNER:$REPORT_OWNER" "$report" 2>/dev/null || true
-  fi
-
-  if [[ "$update_rc" != "0" ]] || grep -Eq 'UPDATE RESULT: FAIL|RESULT: FAIL|DRIFT RESULT: FAIL|PORT RESULT: FAIL|KEYS RESULT: FAIL|SERVICE RESULT: FAIL|SERVICE HEALTH RESULT: FAIL|FAILED SERVICES RESULT: FAIL|WARN: reboot required' "$tmp"; then
-    failed=1
-  fi
-
-  if [[ $failed -ne 0 ]]; then
-    discord_post "$(discord_watch_message FAIL "$host" "$node" "$report" "$tmp")" || true
-    rm -f "$tmp"
-    return 1
-  fi
-
+  if [[ ${EUID:-$(id -u)} -eq 0 ]]; then chown "$REPORT_OWNER:$REPORT_OWNER" "$report" 2>/dev/null || true; fi
+  if [[ $failed -ne 0 ]]; then discord_post "$(discord_watch_message FAIL "$host" "$node" "$report" "$tmp")" || true; rm -f "$tmp"; return 1; fi
+  if [[ $warned -ne 0 ]]; then [[ "${POOLY_ALERT_ON_WARN:-1}" == "1" ]] && discord_post "$(discord_watch_message WARN "$host" "$node" "$report" "$tmp")" || true; rm -f "$tmp"; return 0; fi
   [[ "${POOLY_ALERT_ON_PASS:-0}" == "1" ]] && discord_post "$(discord_watch_message PASS "$host" "$node" "$report" "$tmp")" || true
   rm -f "$tmp"; return 0
 }
@@ -464,7 +542,7 @@ discord_test(){ discord_post "Pooly Server Guard Discord test from $(hostname) /
 install_timer(){
   need_sudo
   local script="$POOLY_INSTALL_PATH"
-  load_env
+  load_env; health_defaults
   $SUDO install -d -m 755 -o "$REPORT_OWNER" -g "$REPORT_OWNER" "$REPORT_DIR" 2>/dev/null || true
   $SUDO tee /etc/systemd/system/pooly-server-guard-watch.service >/dev/null <<EOF2
 [Unit]
@@ -521,6 +599,7 @@ Pooly Server Guard v$VERSION
 Commands:
   verify | baseline-verify | health | save-report
   init-state | watch | self-update
+  server-health
   port-audit | keys-drift | sshd-drift | ufw-drift | services-drift | service-health | failed-services
   discord-test
   install-watch-timer | uninstall-watch-timer
@@ -531,6 +610,7 @@ Update env:
   POOLY_REPO_DIR=$POOLY_REPO_DIR
   POOLY_INSTALL_PATH=$POOLY_INSTALL_PATH
   POOLY_WATCH_ONCALENDAR=$POOLY_WATCH_ONCALENDAR
+  POOLY_ALERT_ON_WARN=${POOLY_ALERT_ON_WARN:-1}
 HELP
 }
 
@@ -543,6 +623,7 @@ case "$cmd" in
   init-state) init_state ;;
   watch) guard_watch ;;
   self-update) self_update ;;
+  server-health) server_health ;;
   port-audit) port_audit ;;
   keys-drift) keys_drift ;;
   sshd-drift) sshd_drift ;;
