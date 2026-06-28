@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
-mkdir -p "$HOME/GPTlogs"
-install -m 700 pooly-server-guard.sh "$HOME/GPTlogs/pooly-server-guard.sh"
-echo "Installed: $HOME/GPTlogs/pooly-server-guard.sh"
+
+INSTALL_DIR="${INSTALL_DIR:-$HOME/GPTlogs}"
+INSTALL_PATH="${POOLY_INSTALL_PATH:-$INSTALL_DIR/pooly-server-guard.sh}"
+
+mkdir -p "$INSTALL_DIR"
+install -m 755 pooly-server-guard.sh "$INSTALL_PATH"
+
+echo "Installed: $INSTALL_PATH"
 echo
-"$HOME/GPTlogs/pooly-server-guard.sh" --help
+"$INSTALL_PATH" --help
