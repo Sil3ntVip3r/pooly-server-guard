@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-VERSION="0.4.4"
+VERSION="0.4.5"
 SSH_PORT="${SSH_PORT:-6200}"
 ADMIN_USERS=("poolyadmin" "pooly-sil3ntvip3r-admin")
 POOLY_STATE_DIR="${POOLY_STATE_DIR:-/etc/pooly/server-guard-state}"
@@ -25,6 +25,12 @@ run_as_report_owner(){
     sudo -H -u "$REPORT_OWNER" "$@"
   else
     "$@"
+  fi
+}
+
+clear_self_failed_state(){
+  if [[ ${EUID:-$(id -u)} -eq 0 ]] && command -v systemctl >/dev/null 2>&1; then
+    systemctl reset-failed pooly-server-guard-watch.service 2>/dev/null || true
   fi
 }
 
@@ -227,6 +233,20 @@ baseline_verify(){
   echo; [[ $failed -eq 0 ]] && echo "BASELINE RESULT: PASS" || echo "BASELINE RESULT: FAIL"; return "$failed"
 }
 
+failed_services_check(){
+  section "FAILED SERVICES"
+  clear_self_failed_state
+  local out
+  out="$(systemctl --failed --no-pager 2>/dev/null || true)"
+  printf '%s\n' "$out"
+  if printf '%s\n' "$out" | grep -Eq '^●[[:space:]]+'; then
+    echo "FAILED SERVICES RESULT: FAIL"
+    return 1
+  fi
+  echo "FAILED SERVICES RESULT: PASS"
+  return 0
+}
+
 health(){
   version_info
   section "POOLY HEALTH AUDIT"; echo "Host: $(hostname)"; echo "Node: $(node_id)"; echo "UTC:  $(date -u)"
@@ -234,7 +254,7 @@ health(){
   section "REBOOT / UPDATES"; test -f /var/run/reboot-required && cat /var/run/reboot-required || echo "No reboot-required flag"; apt list --upgradable 2>/dev/null || true
   section "DISK / INODES"; df -hT; echo; df -ih
   section "MEMORY / SWAP"; free -h; swapon --show || true
-  section "FAILED SERVICES"; systemctl --failed --no-pager || true
+  failed_services_check || true
   section "RUNNING POOLY SERVICES"; systemctl list-units --type=service --state=running --no-pager | egrep 'coin-|miningcore|nginx|redis|fail2ban|chrony|netdata|push-agent|pm2' || true
   section "ALL POOLY SERVICES"; systemctl list-units --type=service --all --no-pager | egrep 'coin-|miningcore|nginx|redis|fail2ban|chrony|netdata|push-agent|pm2' || true
   section "LISTENING PORTS"; ss -lntu || true
@@ -320,6 +340,7 @@ service_health(){
 }
 
 guard_watch(){
+  clear_self_failed_state
   mkdirs; load_env
   local tmp failed=0 host node report update_rc=0
   host="$(hostname)"; node="$(node_id)"; tmp="$(mktemp)"
@@ -334,7 +355,7 @@ guard_watch(){
     [[ "${POOLY_WATCH_WARN_UFW_DRIFT:-1}" == "1" ]] && ufw_drift || true
     services_drift || true
     service_health || true
-    section "FAILED SERVICES"; systemctl --failed --no-pager || true
+    failed_services_check || true
     if test -f /var/run/reboot-required && [[ "${POOLY_WATCH_WARN_REBOOT:-1}" == "1" ]]; then echo "WARN: reboot required"; fi
   } | tee "$tmp"
 
@@ -344,7 +365,7 @@ guard_watch(){
     chown "$REPORT_OWNER:$REPORT_OWNER" "$report" 2>/dev/null || true
   fi
 
-  if [[ "$update_rc" != "0" ]] || grep -Eq 'UPDATE RESULT: FAIL|RESULT: FAIL|DRIFT RESULT: FAIL|PORT RESULT: FAIL|KEYS RESULT: FAIL|SERVICE RESULT: FAIL|SERVICE HEALTH RESULT: FAIL|WARN: reboot required' "$tmp"; then
+  if [[ "$update_rc" != "0" ]] || grep -Eq 'UPDATE RESULT: FAIL|RESULT: FAIL|DRIFT RESULT: FAIL|PORT RESULT: FAIL|KEYS RESULT: FAIL|SERVICE RESULT: FAIL|SERVICE HEALTH RESULT: FAIL|FAILED SERVICES RESULT: FAIL|WARN: reboot required' "$tmp"; then
     failed=1
   fi
 
@@ -418,7 +439,7 @@ Pooly Server Guard v$VERSION
 Commands:
   verify | baseline-verify | health | save-report
   init-state | watch | self-update
-  port-audit | keys-drift | sshd-drift | ufw-drift | services-drift | service-health
+  port-audit | keys-drift | sshd-drift | ufw-drift | services-drift | service-health | failed-services
   discord-test
   install-watch-timer | uninstall-watch-timer
   ssh-lockdown-preview
@@ -445,6 +466,7 @@ case "$cmd" in
   ufw-drift) ufw_drift ;;
   services-drift) services_drift ;;
   service-health) service_health ;;
+  failed-services) failed_services_check ;;
   discord-test) discord_test ;;
   install-watch-timer) install_timer ;;
   uninstall-watch-timer) uninstall_timer ;;
