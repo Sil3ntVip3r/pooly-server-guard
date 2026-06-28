@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.4.4
+
+### Fixed
+
+- Fixed root/systemd self-update Git operations.
+- `self-update` now runs Git commands as `REPORT_OWNER` so deploy-key SSH aliases in the admin user's `~/.ssh/config` work during root timer runs.
+- Fixes failures like:
+
+```text
+ssh: Could not resolve hostname github-pooly-guard-node004
+fatal: Could not read from remote repository.
+UPDATE RESULT: FAIL
+```
+
 ## v0.4.3
 
 ### Added
