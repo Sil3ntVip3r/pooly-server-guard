@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-VERSION="0.5.0-alpha2"
+VERSION="0.5.0-alpha3.1"
 SSH_PORT="${SSH_PORT:-6200}"
 ADMIN_USERS=("poolyadmin" "pooly-sil3ntvip3r-admin")
 POOLY_STATE_DIR="${POOLY_STATE_DIR:-/etc/pooly/server-guard-state}"
@@ -15,6 +15,8 @@ POOLY_GUARD_AUTO_UPDATE="${POOLY_GUARD_AUTO_UPDATE:-1}"
 POOLY_GUARD_AUTO_UPDATE_BRANCH="${POOLY_GUARD_AUTO_UPDATE_BRANCH:-main}"
 POOLY_PORT_STRICT_BASELINE="${POOLY_PORT_STRICT_BASELINE:-0}"
 POOLY_WATCH_ONCALENDAR="${POOLY_WATCH_ONCALENDAR:-*:0/10}"
+POOLY_LOCK_FILE="${POOLY_LOCK_FILE:-/run/pooly-server-guard.lock}"
+POOLY_LOCK_WAIT_SECONDS="${POOLY_LOCK_WAIT_SECONDS:-0}"
 SUDO=""
 [[ ${EUID:-$(id -u)} -eq 0 ]] || SUDO="sudo"
 
@@ -39,6 +41,8 @@ health_defaults(){
   : "${POOLY_JOURNAL_FAIL_MB:=10240}"
   : "${POOLY_GPTLOGS_WARN_MB:=1024}"
   : "${POOLY_GPTLOGS_FAIL_MB:=2048}"
+  : "${POOLY_LOCK_FILE:=/run/pooly-server-guard.lock}"
+  : "${POOLY_LOCK_WAIT_SECONDS:=0}"
 }
 
 run_as_report_owner(){
@@ -61,6 +65,34 @@ clear_self_failed_state(){
   if [[ ${EUID:-$(id -u)} -eq 0 ]] && command -v systemctl >/dev/null 2>&1; then
     systemctl reset-failed pooly-server-guard-watch.service 2>/dev/null || true
   fi
+}
+
+acquire_watch_lock(){
+  section "POOLY SERVER GUARD LOCK"
+  if ! command -v flock >/dev/null 2>&1; then
+    echo "WARN: flock not found; overlap protection disabled"
+    echo "LOCK RESULT: WARN"
+    return 0
+  fi
+  exec 9>"$POOLY_LOCK_FILE" || { echo "WARN: could not open lock file $POOLY_LOCK_FILE"; echo "LOCK RESULT: WARN"; return 0; }
+  if [[ "${POOLY_LOCK_WAIT_SECONDS:-0}" =~ ^[0-9]+$ && "${POOLY_LOCK_WAIT_SECONDS:-0}" -gt 0 ]]; then
+    if ! flock -w "$POOLY_LOCK_WAIT_SECONDS" 9; then
+      echo "SKIP: another Pooly Server Guard watch run is still active after waiting ${POOLY_LOCK_WAIT_SECONDS}s"
+      echo "LOCK RESULT: SKIP"
+      echo "WATCH RESULT: SKIP_LOCKED"
+      return 75
+    fi
+  else
+    if ! flock -n 9; then
+      echo "SKIP: another Pooly Server Guard watch run is already active"
+      echo "LOCK RESULT: SKIP"
+      echo "WATCH RESULT: SKIP_LOCKED"
+      return 75
+    fi
+  fi
+  echo "PASS: lock acquired at $POOLY_LOCK_FILE"
+  echo "LOCK RESULT: PASS"
+  return 0
 }
 
 discord_post(){
@@ -135,6 +167,7 @@ version_info(){
   echo "Configured install path:  $POOLY_INSTALL_PATH"
   echo "Configured repo path:     $POOLY_REPO_DIR"
   echo "Configured timer:         $POOLY_WATCH_ONCALENDAR"
+  echo "Configured lock file:     $POOLY_LOCK_FILE"
   if [[ -d "$POOLY_REPO_DIR/.git" ]]; then
     run_as_report_owner git -C "$POOLY_REPO_DIR" rev-parse --short HEAD 2>/dev/null | awk '{print "Repo HEAD:              "$0}' || true
     [[ -f "$POOLY_REPO_DIR/VERSION" ]] && awk '{print "Repo VERSION:           "$0}' "$POOLY_REPO_DIR/VERSION" || true
@@ -263,9 +296,9 @@ service_health(){
   [[ $failed -eq 0 ]] && { echo "SERVICE HEALTH RESULT: PASS"; return 0; } || { echo "SERVICE HEALTH RESULT: FAIL"; return 1; }
 }
 
-watch_results_summary(){ local file="${1:?missing report tmp}"; grep -E '^(UPDATE RESULT|RESULT|BASELINE RESULT|SERVER HEALTH RESULT|PORT RESULT|KEYS RESULT|SSHD DRIFT RESULT|UFW DRIFT RESULT|SERVICE RESULT|SERVICE HEALTH RESULT|FAILED SERVICES RESULT|WATCH RESULT):' "$file" | sed 's/^/- /' | head -24; }
+watch_results_summary(){ local file="${1:?missing report tmp}"; grep -E '^(LOCK RESULT|UPDATE RESULT|RESULT|BASELINE RESULT|SERVER HEALTH RESULT|PORT RESULT|KEYS RESULT|SSHD DRIFT RESULT|UFW DRIFT RESULT|SERVICE RESULT|SERVICE HEALTH RESULT|FAILED SERVICES RESULT|WATCH RESULT):' "$file" | sed 's/^/- /' | head -24; }
 watch_health_summary(){ local file="${1:?missing report tmp}"; grep -E '^(DISK /|DISK WORST|INODES /|RAM:|SWAP:|LOAD:|UPTIME:|REBOOT REQUIRED:|JOURNAL SIZE:|GPTLOGS SIZE:)' "$file" | sed 's/^/- /' | head -12 || true; }
-watch_issue_summary(){ local file="${1:?missing report tmp}"; { grep -E '^(DISK /|DISK WORST|INODES /|RAM:|SWAP:|LOAD:|REBOOT REQUIRED:|JOURNAL SIZE:|GPTLOGS SIZE:).*(— WARN|— FAIL)' "$file" | sed 's/^/- /'; grep -E '^(UPDATE RESULT|RESULT|BASELINE RESULT|SERVER HEALTH RESULT|PORT RESULT|KEYS RESULT|SSHD DRIFT RESULT|UFW DRIFT RESULT|SERVICE RESULT|SERVICE HEALTH RESULT|FAILED SERVICES RESULT|WATCH RESULT): (WARN|FAIL)' "$file" | sed 's/^/- /'; grep -E '^(FAIL:|WARN:|ERROR:)' "$file" | sed 's/^/- /'; } | awk '!seen[$0]++' | head -12; }
+watch_issue_summary(){ local file="${1:?missing report tmp}"; { grep -E '^(DISK /|DISK WORST|INODES /|RAM:|SWAP:|LOAD:|REBOOT REQUIRED:|JOURNAL SIZE:|GPTLOGS SIZE:).*(— WARN|— FAIL)' "$file" | sed 's/^/- /'; grep -E '^(LOCK RESULT|UPDATE RESULT|RESULT|BASELINE RESULT|SERVER HEALTH RESULT|PORT RESULT|KEYS RESULT|SSHD DRIFT RESULT|UFW DRIFT RESULT|SERVICE RESULT|SERVICE HEALTH RESULT|FAILED SERVICES RESULT|WATCH RESULT): (WARN|FAIL|SKIP|SKIP_LOCKED)' "$file" | sed 's/^/- /'; grep -E '^(FAIL:|WARN:|ERROR:)' "$file" | sed 's/^/- /'; } | awk '!seen[$0]++' | head -12; }
 watch_issue_action(){ local file="${1:?missing report tmp}"; if grep -Eq '^(DISK /|DISK WORST|JOURNAL SIZE:|GPTLOGS SIZE:).*(— WARN|— FAIL)' "$file"; then echo "Storage/logs crossed a threshold. Check disk, journal size, and GPTlogs before services are affected."; elif grep -Eq '^(RAM:|SWAP:|LOAD:).*(— WARN|— FAIL)' "$file"; then echo "Resource pressure crossed a threshold. Check active processes and Pooly/coin service load."; elif grep -Eq '^REBOOT REQUIRED: yes' "$file"; then echo "Server reports reboot required. Plan a controlled reboot window when safe."; elif grep -Eq 'SERVICE HEALTH RESULT: FAIL|FAILED SERVICES RESULT: FAIL|SERVICE RESULT: FAIL' "$file"; then echo "A Pooly/system service check failed. Review service health and failed systemd units on this node."; elif grep -Eq 'SSHD DRIFT RESULT: FAIL|KEYS RESULT: FAIL|UFW DRIFT RESULT: FAIL|RESULT: FAIL' "$file"; then echo "A security or access-control check failed. Review SSH, keys, sudo, and firewall drift immediately."; else echo "Review the issue summary and open the report path on the affected server."; fi; }
 
 discord_watch_message(){
@@ -347,15 +380,19 @@ EOF
 
 guard_watch(){
   clear_self_failed_state; mkdirs; load_env; health_defaults
+  local lock_rc=0
+  acquire_watch_lock || lock_rc=$?
+  if [[ "$lock_rc" == "75" ]]; then return 0; elif [[ "$lock_rc" != "0" ]]; then return "$lock_rc"; fi
   local tmp failed=0 warned=0 host node report update_rc=0 outcome="PASS"
   host="$(hostname)"; node="$(node_id)"; tmp="$(mktemp)"
-  { self_update || update_rc=$?; verify || true; baseline_verify || true; server_health || true; port_audit || true; keys_drift || true; sshd_drift || true; [[ "${POOLY_WATCH_WARN_UFW_DRIFT:-1}" == "1" ]] && ufw_drift || true; services_drift || true; service_health || true; failed_services_check || true; } | tee "$tmp"
+  { echo "LOCK RESULT: PASS"; self_update || update_rc=$?; verify || true; baseline_verify || true; server_health || true; port_audit || true; keys_drift || true; sshd_drift || true; [[ "${POOLY_WATCH_WARN_UFW_DRIFT:-1}" == "1" ]] && ufw_drift || true; services_drift || true; service_health || true; failed_services_check || true; } | tee "$tmp"
   if [[ "$update_rc" != "0" ]] || grep -Eq 'UPDATE RESULT: FAIL|RESULT: FAIL|DRIFT RESULT: FAIL|PORT RESULT: FAIL|KEYS RESULT: FAIL|SERVICE RESULT: FAIL|SERVICE HEALTH RESULT: FAIL|FAILED SERVICES RESULT: FAIL|SERVER HEALTH RESULT: FAIL' "$tmp"; then failed=1; outcome="FAIL"; elif grep -Eq 'SERVER HEALTH RESULT: WARN|WARN:' "$tmp"; then warned=1; outcome="WARN"; fi
   echo "WATCH RESULT: $outcome" | tee -a "$tmp"
   report="$REPORT_DIR/pooly-server-guard-watch-$host-$(date -u +%Y%m%d-%H%M%S).txt"; cp "$tmp" "$report"; [[ ${EUID:-$(id -u)} -eq 0 ]] && chown "$REPORT_OWNER:$REPORT_OWNER" "$report" 2>/dev/null || true
-  if [[ $failed -ne 0 ]]; then discord_post "$(discord_watch_message FAIL "$host" "$node" "$report" "$tmp")" || true; return 1; fi
-  if [[ $warned -ne 0 ]]; then [[ "${POOLY_ALERT_ON_WARN:-1}" == "1" ]] && discord_post "$(discord_watch_message WARN "$host" "$node" "$report" "$tmp")" || true; return 0; fi
-  [[ "${POOLY_ALERT_ON_PASS:-0}" == "1" ]] && discord_post "$(discord_watch_message PASS "$host" "$node" "$report" "$tmp")" || true; return 0
+  if [[ $failed -ne 0 ]]; then discord_post "$(discord_watch_message FAIL "$host" "$node" "$report" "$tmp")" || true; rm -f "$tmp"; return 1; fi
+  if [[ $warned -ne 0 ]]; then [[ "${POOLY_ALERT_ON_WARN:-1}" == "1" ]] && discord_post "$(discord_watch_message WARN "$host" "$node" "$report" "$tmp")" || true; rm -f "$tmp"; return 0; fi
+  [[ "${POOLY_ALERT_ON_PASS:-0}" == "1" ]] && discord_post "$(discord_watch_message PASS "$host" "$node" "$report" "$tmp")" || true
+  rm -f "$tmp"; return 0
 }
 
 save_report(){ mkdirs; local f="$REPORT_DIR/pooly-server-guard-$(hostname)-$(date -u +%Y%m%d-%H%M%S).txt"; health | tee "$f"; [[ ${EUID:-$(id -u)} -eq 0 ]] && chown "$REPORT_OWNER:$REPORT_OWNER" "$f" 2>/dev/null || true; echo "Saved report: $f"; }
@@ -374,6 +411,7 @@ Environment=REPORT_DIR=$REPORT_DIR
 Environment=POOLY_REPO_DIR=$POOLY_REPO_DIR
 Environment=POOLY_INSTALL_PATH=$POOLY_INSTALL_PATH
 Environment=POOLY_WATCH_ONCALENDAR=$POOLY_WATCH_ONCALENDAR
+Environment=POOLY_LOCK_FILE=$POOLY_LOCK_FILE
 WorkingDirectory=$POOLY_REPO_DIR
 ExecStart=$script watch
 EOF2
