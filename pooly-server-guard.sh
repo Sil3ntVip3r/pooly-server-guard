@@ -1,19 +1,33 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-VERSION="0.4.2"
+VERSION="0.4.3"
 SSH_PORT="${SSH_PORT:-6200}"
 ADMIN_USERS=("poolyadmin" "pooly-sil3ntvip3r-admin")
 POOLY_STATE_DIR="${POOLY_STATE_DIR:-/etc/pooly/server-guard-state}"
 POOLY_GUARD_ENV="${POOLY_GUARD_ENV:-/etc/pooly/server-guard.env}"
-REPORT_DIR="${REPORT_DIR:-$HOME/GPTlogs}"
+REPORT_OWNER="${REPORT_OWNER:-pooly-sil3ntvip3r-admin}"
+REPORT_HOME="$(getent passwd "$REPORT_OWNER" 2>/dev/null | cut -d: -f6 || true)"
+REPORT_DIR="${REPORT_DIR:-${REPORT_HOME:-$HOME}/GPTlogs}"
+POOLY_REPO_DIR="${POOLY_REPO_DIR:-${REPORT_HOME:-$HOME}/GPTrepos/pooly-server-guard}"
+POOLY_INSTALL_PATH="${POOLY_INSTALL_PATH:-${REPORT_HOME:-$HOME}/GPTlogs/pooly-server-guard.sh}"
+POOLY_GUARD_AUTO_UPDATE="${POOLY_GUARD_AUTO_UPDATE:-1}"
+POOLY_GUARD_AUTO_UPDATE_BRANCH="${POOLY_GUARD_AUTO_UPDATE_BRANCH:-main}"
 POOLY_PORT_STRICT_BASELINE="${POOLY_PORT_STRICT_BASELINE:-0}"
 SUDO=""
 [[ ${EUID:-$(id -u)} -eq 0 ]] || SUDO="sudo"
 
 section(){ printf '\n============================================================\n %s\n============================================================\n' "$*"; }
 need_sudo(){ [[ ${EUID:-$(id -u)} -eq 0 ]] || sudo -v; }
-mkdirs(){ mkdir -p "$REPORT_DIR" 2>/dev/null || true; }
+
+mkdirs(){
+  if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
+    install -d -m 755 -o "$REPORT_OWNER" -g "$REPORT_OWNER" "$REPORT_DIR" 2>/dev/null || mkdir -p "$REPORT_DIR"
+  else
+    mkdir -p "$REPORT_DIR" 2>/dev/null || true
+  fi
+}
+
 load_env(){ [[ -f "$POOLY_GUARD_ENV" ]] && source "$POOLY_GUARD_ENV"; }
 json_escape(){ python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'; }
 
@@ -40,7 +54,24 @@ node_id(){
 }
 
 current_ports(){ ss -H -lntu 2>/dev/null | awk '{print $5}' | sed -E 's/.*:([0-9]+)$/\1/' | sort -n | uniq; }
-current_services(){ systemctl list-units --type=service --state=running --no-legend 2>/dev/null | awk '{print $1}' | grep -E '^(coin-|miningcore|nginx|redis-server|fail2ban|chrony|netdata|push-agent|pm2-|systemd-journald@netdata)' | sort -u || true; }
+
+current_services(){
+  systemctl list-units --type=service --state=running --no-legend 2>/dev/null \
+    | awk '{print $1}' \
+    | grep -E '^(coin-|miningcore|nginx|redis-server|fail2ban|chrony|netdata|push-agent|pm2-|systemd-journald@netdata)' \
+    | sort -u || true
+}
+
+pooly_units_all(){
+  systemctl list-units --type=service --all --no-legend 2>/dev/null \
+    | awk '{print $1}' \
+    | grep -E '^(coin-|miningcore|pm2-|nginx|redis-server|fail2ban|chrony|netdata|push-agent|systemd-journald@netdata)' \
+    | sort -u || true
+}
+
+baseline_services(){
+  $SUDO cat "$POOLY_STATE_DIR/services.txt" 2>/dev/null | sort -u || true
+}
 
 key_fingerprints(){
   for u in "${ADMIN_USERS[@]}" root; do
@@ -58,6 +89,98 @@ key_fingerprints(){
 
 sshd_policy(){ $SUDO sshd -T 2>/dev/null | egrep '^(port|permitrootlogin|pubkeyauthentication|passwordauthentication|kbdinteractiveauthentication|allowusers|maxauthtries|maxsessions|maxstartups) ' | sort; }
 ufw_rules(){ $SUDO ufw status numbered 2>/dev/null | sed 's/[[:space:]]\+$//' || true; }
+
+version_info(){
+  section "POOLY SERVER GUARD VERSION"
+  echo "Installed script version: $VERSION"
+  echo "Installed script path:    ${BASH_SOURCE[0]:-$POOLY_INSTALL_PATH}"
+  echo "Configured install path:  $POOLY_INSTALL_PATH"
+  echo "Configured repo path:     $POOLY_REPO_DIR"
+  if [[ -d "$POOLY_REPO_DIR/.git" ]]; then
+    git -C "$POOLY_REPO_DIR" rev-parse --short HEAD 2>/dev/null | awk '{print "Repo HEAD:              "$0}' || true
+    [[ -f "$POOLY_REPO_DIR/VERSION" ]] && awk '{print "Repo VERSION:           "$0}' "$POOLY_REPO_DIR/VERSION" || true
+  else
+    echo "Repo state:             missing"
+  fi
+}
+
+self_update(){
+  section "POOLY SERVER GUARD UPDATE CHECK"
+  load_env
+  echo "Running version: $VERSION"
+  echo "Auto update: ${POOLY_GUARD_AUTO_UPDATE:-1}"
+  echo "Repo dir: $POOLY_REPO_DIR"
+  echo "Install path: $POOLY_INSTALL_PATH"
+
+  if [[ "${POOLY_GUARD_AUTO_UPDATE:-1}" != "1" ]]; then
+    echo "SKIP: auto update disabled"
+    echo "UPDATE RESULT: PASS"
+    return 0
+  fi
+
+  if ! command -v git >/dev/null 2>&1; then
+    echo "FAIL: git is not installed"
+    echo "UPDATE RESULT: FAIL"
+    return 1
+  fi
+
+  if [[ ! -d "$POOLY_REPO_DIR/.git" ]]; then
+    echo "FAIL: repo missing at $POOLY_REPO_DIR"
+    echo "UPDATE RESULT: FAIL"
+    return 1
+  fi
+
+  local branch remote_ref before after repo_version installed_changed=0
+  branch="${POOLY_GUARD_AUTO_UPDATE_BRANCH:-main}"
+  remote_ref="origin/$branch"
+
+  before="$(git -C "$POOLY_REPO_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  echo "Local repo before: $before"
+
+  if ! git -C "$POOLY_REPO_DIR" fetch --quiet --all --prune; then
+    echo "FAIL: git fetch failed"
+    echo "UPDATE RESULT: FAIL"
+    return 1
+  fi
+
+  if ! git -C "$POOLY_REPO_DIR" rev-parse --verify "$remote_ref" >/dev/null 2>&1; then
+    echo "FAIL: remote ref $remote_ref not found"
+    echo "UPDATE RESULT: FAIL"
+    return 1
+  fi
+
+  if ! git -C "$POOLY_REPO_DIR" reset --hard "$remote_ref" >/dev/null; then
+    echo "FAIL: git reset to $remote_ref failed"
+    echo "UPDATE RESULT: FAIL"
+    return 1
+  fi
+
+  after="$(git -C "$POOLY_REPO_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  repo_version="$(cat "$POOLY_REPO_DIR/VERSION" 2>/dev/null || echo unknown)"
+  echo "Local repo after:  $after"
+  echo "Latest repo version: $repo_version"
+
+  if [[ ! -x "$POOLY_INSTALL_PATH" ]] || ! cmp -s "$POOLY_REPO_DIR/pooly-server-guard.sh" "$POOLY_INSTALL_PATH"; then
+    need_sudo
+    $SUDO install -m 755 "$POOLY_REPO_DIR/pooly-server-guard.sh" "$POOLY_INSTALL_PATH"
+    if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
+      chown "$REPORT_OWNER:$REPORT_OWNER" "$POOLY_INSTALL_PATH" 2>/dev/null || true
+    fi
+    installed_changed=1
+    echo "UPDATED: installed script refreshed from repo"
+  else
+    echo "PASS: installed script already matches repo"
+  fi
+
+  if [[ "$repo_version" != "$VERSION" ]]; then
+    echo "INFO: this running process is v$VERSION; installed script is now repo v$repo_version"
+    echo "INFO: the next timer/manual run will execute the updated script."
+  fi
+
+  [[ "$installed_changed" == "1" ]] && echo "UPDATE ACTION: INSTALLED" || echo "UPDATE ACTION: NONE"
+  echo "UPDATE RESULT: PASS"
+  return 0
+}
 
 verify(){
   section "POOLY SERVER GUARD VERIFY"
@@ -96,6 +219,7 @@ baseline_verify(){
 }
 
 health(){
+  version_info
   section "POOLY HEALTH AUDIT"; echo "Host: $(hostname)"; echo "Node: $(node_id)"; echo "UTC:  $(date -u)"
   section "OS / KERNEL / UPTIME"; lsb_release -a 2>/dev/null || true; uname -a; uptime
   section "REBOOT / UPDATES"; test -f /var/run/reboot-required && cat /var/run/reboot-required || echo "No reboot-required flag"; apt list --upgradable 2>/dev/null || true
@@ -103,6 +227,7 @@ health(){
   section "MEMORY / SWAP"; free -h; swapon --show || true
   section "FAILED SERVICES"; systemctl --failed --no-pager || true
   section "RUNNING POOLY SERVICES"; systemctl list-units --type=service --state=running --no-pager | egrep 'coin-|miningcore|nginx|redis|fail2ban|chrony|netdata|push-agent|pm2' || true
+  section "ALL POOLY SERVICES"; systemctl list-units --type=service --all --no-pager | egrep 'coin-|miningcore|nginx|redis|fail2ban|chrony|netdata|push-agent|pm2' || true
   section "LISTENING PORTS"; ss -lntu || true
   section "WIREGUARD"; $SUDO wg show 2>/dev/null || true
 }
@@ -114,6 +239,7 @@ init_state(){
   sshd_policy | $SUDO tee "$POOLY_STATE_DIR/sshd.txt" >/dev/null
   ufw_rules | $SUDO tee "$POOLY_STATE_DIR/ufw.txt" >/dev/null
   current_services | $SUDO tee "$POOLY_STATE_DIR/services.txt" >/dev/null
+  echo "$VERSION" | $SUDO tee "$POOLY_STATE_DIR/guard-version.txt" >/dev/null
   echo "Saved known-good state in $POOLY_STATE_DIR"
 }
 
@@ -150,16 +276,47 @@ port_audit(){
   fi
   [[ $failed -eq 0 ]] && { echo "PORT RESULT: PASS"; return 0; } || { echo "PORT RESULT: FAIL"; return 1; }
 }
+
 keys_drift(){ section "AUTHORIZED_KEYS DRIFT"; diff_state keys key_fingerprints && echo "KEYS RESULT: PASS" || { echo "KEYS RESULT: FAIL"; return 1; }; }
 sshd_drift(){ section "SSHD POLICY DRIFT"; diff_state sshd sshd_policy && echo "SSHD DRIFT RESULT: PASS" || { echo "SSHD DRIFT RESULT: FAIL"; return 1; }; }
 ufw_drift(){ section "UFW DRIFT"; diff_state ufw ufw_rules && echo "UFW DRIFT RESULT: PASS" || { echo "UFW DRIFT RESULT: FAIL"; return 1; }; }
 services_drift(){ section "POOLY SERVICE DRIFT"; diff_state services current_services && echo "SERVICE RESULT: PASS" || { echo "SERVICE RESULT: FAIL"; return 1; }; }
 
+service_health(){
+  section "POOLY SERVICE HEALTH"
+  local failed=0 svc active sub result nrestarts status units
+  units="$( { pooly_units_all; baseline_services; } | sort -u )"
+  if [[ -z "$units" ]]; then
+    echo "WARN: no Pooly services found to check"
+    echo "SERVICE HEALTH RESULT: FAIL"
+    return 1
+  fi
+
+  while read -r svc; do
+    [[ -n "$svc" ]] || continue
+    active="$(systemctl show "$svc" -p ActiveState --value 2>/dev/null || echo unknown)"
+    sub="$(systemctl show "$svc" -p SubState --value 2>/dev/null || echo unknown)"
+    result="$(systemctl show "$svc" -p Result --value 2>/dev/null || echo unknown)"
+    nrestarts="$(systemctl show "$svc" -p NRestarts --value 2>/dev/null || echo 0)"
+    status="$(systemctl show "$svc" -p ExecMainStatus --value 2>/dev/null || echo 0)"
+    printf '%-38s ActiveState=%s SubState=%s Result=%s NRestarts=%s ExecMainStatus=%s\n' "$svc" "$active" "$sub" "$result" "$nrestarts" "$status"
+
+    if [[ "$active" != "active" ]]; then failed=1; echo "FAIL: $svc ActiveState is $active"; fi
+    if [[ "$sub" == "auto-restart" || "$sub" == "failed" ]]; then failed=1; echo "FAIL: $svc SubState is $sub"; fi
+    if [[ "$result" == "exit-code" || "$result" == "signal" || "$result" == "core-dump" || "$result" == "timeout" ]]; then failed=1; echo "FAIL: $svc Result is $result"; fi
+    if [[ "$status" != "0" ]]; then failed=1; echo "FAIL: $svc ExecMainStatus is $status"; fi
+  done <<< "$units"
+
+  [[ $failed -eq 0 ]] && { echo "SERVICE HEALTH RESULT: PASS"; return 0; } || { echo "SERVICE HEALTH RESULT: FAIL"; return 1; }
+}
+
 guard_watch(){
   mkdirs; load_env
-  local tmp failed=0 host node report
+  local tmp failed=0 host node report update_rc=0
   host="$(hostname)"; node="$(node_id)"; tmp="$(mktemp)"
+
   {
+    self_update || update_rc=$?
     verify || true
     baseline_verify || true
     port_audit || true
@@ -167,22 +324,38 @@ guard_watch(){
     sshd_drift || true
     [[ "${POOLY_WATCH_WARN_UFW_DRIFT:-1}" == "1" ]] && ufw_drift || true
     services_drift || true
+    service_health || true
     section "FAILED SERVICES"; systemctl --failed --no-pager || true
     if test -f /var/run/reboot-required && [[ "${POOLY_WATCH_WARN_REBOOT:-1}" == "1" ]]; then echo "WARN: reboot required"; fi
   } | tee "$tmp"
-  report="$REPORT_DIR/pooly-server-guard-watch-$host-$(date -u +%Y%m%d-%H%M%S).txt"; cp "$tmp" "$report"
-  if grep -Eq 'RESULT: FAIL|DRIFT RESULT: FAIL|PORT RESULT: FAIL|KEYS RESULT: FAIL|SERVICE RESULT: FAIL|WARN: reboot required' "$tmp"; then failed=1; fi
-  if [[ $failed -ne 0 ]]; then discord_post "Pooly Server Guard FAIL on $host / node $node. Report: $report" || true; rm -f "$tmp"; return 1; fi
+
+  report="$REPORT_DIR/pooly-server-guard-watch-$host-$(date -u +%Y%m%d-%H%M%S).txt"
+  cp "$tmp" "$report"
+  if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
+    chown "$REPORT_OWNER:$REPORT_OWNER" "$report" 2>/dev/null || true
+  fi
+
+  if [[ "$update_rc" != "0" ]] || grep -Eq 'UPDATE RESULT: FAIL|RESULT: FAIL|DRIFT RESULT: FAIL|PORT RESULT: FAIL|KEYS RESULT: FAIL|SERVICE RESULT: FAIL|SERVICE HEALTH RESULT: FAIL|WARN: reboot required' "$tmp"; then
+    failed=1
+  fi
+
+  if [[ $failed -ne 0 ]]; then
+    discord_post "Pooly Server Guard FAIL on $host / node $node. Report: $report" || true
+    rm -f "$tmp"
+    return 1
+  fi
+
   [[ "${POOLY_ALERT_ON_PASS:-0}" == "1" ]] && discord_post "Pooly Server Guard PASS on $host / node $node" || true
   rm -f "$tmp"; return 0
 }
 
-save_report(){ mkdirs; local f="$REPORT_DIR/pooly-server-guard-$(hostname)-$(date -u +%Y%m%d-%H%M%S).txt"; health | tee "$f"; echo "Saved report: $f"; }
+save_report(){ mkdirs; local f="$REPORT_DIR/pooly-server-guard-$(hostname)-$(date -u +%Y%m%d-%H%M%S).txt"; health | tee "$f"; [[ ${EUID:-$(id -u)} -eq 0 ]] && chown "$REPORT_OWNER:$REPORT_OWNER" "$f" 2>/dev/null || true; echo "Saved report: $f"; }
 discord_test(){ discord_post "Pooly Server Guard Discord test from $(hostname) / node $(node_id)" && echo "Discord test sent"; }
 
 install_timer(){
   need_sudo
-  local script="$HOME/GPTlogs/pooly-server-guard.sh"; [[ ${EUID:-$(id -u)} -eq 0 ]] && script="/home/pooly-sil3ntvip3r-admin/GPTlogs/pooly-server-guard.sh"
+  local script="$POOLY_INSTALL_PATH"
+  $SUDO install -d -m 755 -o "$REPORT_OWNER" -g "$REPORT_OWNER" "$REPORT_DIR" 2>/dev/null || true
   $SUDO tee /etc/systemd/system/pooly-server-guard-watch.service >/dev/null <<EOF2
 [Unit]
 Description=Pooly Server Guard watch check
@@ -192,6 +365,11 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 User=root
+Environment=REPORT_OWNER=$REPORT_OWNER
+Environment=REPORT_DIR=$REPORT_DIR
+Environment=POOLY_REPO_DIR=$POOLY_REPO_DIR
+Environment=POOLY_INSTALL_PATH=$POOLY_INSTALL_PATH
+WorkingDirectory=$POOLY_REPO_DIR
 ExecStart=$script watch
 EOF2
   $SUDO tee /etc/systemd/system/pooly-server-guard-watch.timer >/dev/null <<'EOF2'
@@ -205,8 +383,11 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 EOF2
-  $SUDO systemctl daemon-reload; $SUDO systemctl enable --now pooly-server-guard-watch.timer; $SUDO systemctl status pooly-server-guard-watch.timer --no-pager || true
+  $SUDO systemctl daemon-reload
+  $SUDO systemctl enable --now pooly-server-guard-watch.timer
+  $SUDO systemctl status pooly-server-guard-watch.timer --no-pager || true
 }
+
 uninstall_timer(){ need_sudo; $SUDO systemctl disable --now pooly-server-guard-watch.timer 2>/dev/null || true; $SUDO rm -f /etc/systemd/system/pooly-server-guard-watch.{timer,service}; $SUDO systemctl daemon-reload; }
 
 ssh_lockdown_preview(){
@@ -227,11 +408,16 @@ usage(){ cat <<HELP
 Pooly Server Guard v$VERSION
 Commands:
   verify | baseline-verify | health | save-report
-  init-state | watch
-  port-audit | keys-drift | sshd-drift | ufw-drift | services-drift
+  init-state | watch | self-update
+  port-audit | keys-drift | sshd-drift | ufw-drift | services-drift | service-health
   discord-test
   install-watch-timer | uninstall-watch-timer
   ssh-lockdown-preview
+
+Update env:
+  POOLY_GUARD_AUTO_UPDATE=1
+  POOLY_REPO_DIR=$POOLY_REPO_DIR
+  POOLY_INSTALL_PATH=$POOLY_INSTALL_PATH
 HELP
 }
 
@@ -243,11 +429,13 @@ case "$cmd" in
   save-report) save_report ;;
   init-state) init_state ;;
   watch) guard_watch ;;
+  self-update) self_update ;;
   port-audit) port_audit ;;
   keys-drift) keys_drift ;;
   sshd-drift) sshd_drift ;;
   ufw-drift) ufw_drift ;;
   services-drift) services_drift ;;
+  service-health) service_health ;;
   discord-test) discord_test ;;
   install-watch-timer) install_timer ;;
   uninstall-watch-timer) uninstall_timer ;;
