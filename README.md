@@ -1,4 +1,4 @@
-# Pooly Server Guard v0.4.4
+# Pooly Server Guard v0.4.5
 
 Defensive hardening, baseline verification, drift detection, self-updating scheduled checks, and optional Discord alerting for the 4 Pooly SSDNodes servers.
 
@@ -19,17 +19,36 @@ Defensive hardening, baseline verification, drift detection, self-updating sched
 - UFW drift detection
 - Pooly service drift detection
 - Pooly service health detection, including `activating auto-restart`
-- failed systemd service detection
+- failed systemd service detection with `FAILED SERVICES RESULT`
 - self-update check from the local GitHub clone during scheduled `watch`
 - root-safe GitHub self-update using the admin user's SSH deploy-key config
 - stable report path for root/systemd timer runs
 - optional Discord webhook alerts
 
+## New in v0.4.5
+
+v0.4.5 handles a stale self-failure state discovered after upgrading Node004.
+
+The 02:00 scheduled run failed under v0.4.3 because root could not use the admin deploy-key SSH alias. After v0.4.4 fixed that, `systemctl --failed` still showed the old `pooly-server-guard-watch.service` failure until reset.
+
+v0.4.5 now:
+
+- clears stale `pooly-server-guard-watch.service` failed state before checks
+- adds a `failed-services` command
+- reports `FAILED SERVICES RESULT: PASS/FAIL`
+- makes real failed systemd units fail `watch`
+
+Manual check:
+
+```bash
+sudo ~/GPTlogs/pooly-server-guard.sh failed-services
+```
+
 ## New in v0.4.4
 
 v0.4.4 fixes a root/systemd self-update issue discovered on Node004.
 
-When the timer runs as root, Git commands must still use the admin user's deploy-key SSH config. v0.4.4 runs Git operations as `REPORT_OWNER`, which defaults to:
+When the timer runs as root, Git commands must still use the admin user's deploy-key SSH config. v0.4.4+ runs Git operations as `REPORT_OWNER`, which defaults to:
 
 ```text
 pooly-sil3ntvip3r-admin
@@ -166,6 +185,7 @@ SSHD DRIFT RESULT: PASS
 UFW DRIFT RESULT: PASS
 SERVICE RESULT: PASS
 SERVICE HEALTH RESULT: PASS
+FAILED SERVICES RESULT: PASS
 ```
 
 ## Discord setup
