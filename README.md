@@ -1,6 +1,6 @@
-# Pooly Server Guard v0.4.2
+# Pooly Server Guard v0.4.3
 
-Defensive hardening, baseline verification, drift detection, and optional Discord alerting for the 4 Pooly SSDNodes servers.
+Defensive hardening, baseline verification, drift detection, self-updating scheduled checks, and optional Discord alerting for the 4 Pooly SSDNodes servers.
 
 ## Core checks
 
@@ -18,28 +18,85 @@ Defensive hardening, baseline verification, drift detection, and optional Discor
 - sshd policy drift detection
 - UFW drift detection
 - Pooly service drift detection
+- Pooly service health detection, including `activating auto-restart`
 - failed systemd service detection
+- self-update check from the local GitHub clone during scheduled `watch`
+- stable report path for root/systemd timer runs
 - optional Discord webhook alerts
 
-## New in v0.4.2
+## New in v0.4.3
 
-- Miningcore-aware port audit.
-- Dynamic Miningcore/coin daemon ports can open and close quickly without failing the watch check.
-- Static port drift is informational by default.
-- Strict static port drift can be re-enabled with:
+### Self-updating scheduled checks
+
+`watch` now runs a GitHub update check before the normal guard checks.
+
+By default it uses:
 
 ```bash
-POOLY_PORT_STRICT_BASELINE=1
+POOLY_GUARD_AUTO_UPDATE=1
+POOLY_GUARD_AUTO_UPDATE_BRANCH=main
+POOLY_REPO_DIR=/home/pooly-sil3ntvip3r-admin/GPTrepos/pooly-server-guard
+POOLY_INSTALL_PATH=/home/pooly-sil3ntvip3r-admin/GPTlogs/pooly-server-guard.sh
 ```
 
-- The timer now uses a clear 30-minute calendar schedule:
+If the local repo is behind `origin/main`, the scheduled run fetches, resets to the latest `main`, and refreshes the installed script.
+
+Run manually:
+
+```bash
+sudo ~/GPTlogs/pooly-server-guard.sh self-update
+```
+
+### Service health catches auto-restart loops
+
+`systemctl --failed` does not catch every broken service. During the Node002/Node003/Node004 cleanup, `coin-kerrigan.service` and `coin-neoxa.service` could be stuck in:
+
+```text
+ActiveState=activating
+SubState=auto-restart
+Result=exit-code
+```
+
+v0.4.3 adds `service-health` and includes it in `watch`, so auto-restart loops now fail the guard check.
+
+Run manually:
+
+```bash
+sudo ~/GPTlogs/pooly-server-guard.sh service-health
+```
+
+### Stable report location
+
+Timer runs execute as root, but reports now stay under the admin user path by default:
+
+```text
+/home/pooly-sil3ntvip3r-admin/GPTlogs
+```
+
+The timer unit sets:
 
 ```ini
-OnCalendar=*:0/30
-Persistent=true
+Environment=REPORT_OWNER=pooly-sil3ntvip3r-admin
+Environment=REPORT_DIR=/home/pooly-sil3ntvip3r-admin/GPTlogs
+Environment=POOLY_REPO_DIR=/home/pooly-sil3ntvip3r-admin/GPTrepos/pooly-server-guard
+Environment=POOLY_INSTALL_PATH=/home/pooly-sil3ntvip3r-admin/GPTlogs/pooly-server-guard.sh
 ```
 
-- Removed the need for a separate Node003 hotfix workflow.
+## Recovery notes learned from rollout
+
+See:
+
+```text
+docs/POOLY_NODE_RECOVERY_NOTES.md
+```
+
+That file documents:
+
+- Kerrigan Plan-X / sapling cache corruption
+- Kerrigan `-resetchainstate` recovery
+- Neoxa zero-byte/bad `sporks.dat` recovery
+- why `systemctl --failed` is not enough
+- final all-node timer proof workflow
 
 ## GitHub install
 
@@ -81,6 +138,7 @@ sudo ~/GPTlogs/pooly-server-guard.sh watch
 Expected:
 
 ```text
+UPDATE RESULT: PASS
 RESULT: PASS
 BASELINE RESULT: PASS
 PORT RESULT: PASS
@@ -88,6 +146,7 @@ KEYS RESULT: PASS
 SSHD DRIFT RESULT: PASS
 UFW DRIFT RESULT: PASS
 SERVICE RESULT: PASS
+SERVICE HEALTH RESULT: PASS
 ```
 
 ## Discord setup
