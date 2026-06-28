@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-VERSION="0.4.3"
+VERSION="0.4.4"
 SSH_PORT="${SSH_PORT:-6200}"
 ADMIN_USERS=("poolyadmin" "pooly-sil3ntvip3r-admin")
 POOLY_STATE_DIR="${POOLY_STATE_DIR:-/etc/pooly/server-guard-state}"
@@ -19,6 +19,14 @@ SUDO=""
 
 section(){ printf '\n============================================================\n %s\n============================================================\n' "$*"; }
 need_sudo(){ [[ ${EUID:-$(id -u)} -eq 0 ]] || sudo -v; }
+
+run_as_report_owner(){
+  if [[ ${EUID:-$(id -u)} -eq 0 && -n "${REPORT_OWNER:-}" && "$REPORT_OWNER" != "root" ]]; then
+    sudo -H -u "$REPORT_OWNER" "$@"
+  else
+    "$@"
+  fi
+}
 
 mkdirs(){
   if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
@@ -97,7 +105,7 @@ version_info(){
   echo "Configured install path:  $POOLY_INSTALL_PATH"
   echo "Configured repo path:     $POOLY_REPO_DIR"
   if [[ -d "$POOLY_REPO_DIR/.git" ]]; then
-    git -C "$POOLY_REPO_DIR" rev-parse --short HEAD 2>/dev/null | awk '{print "Repo HEAD:              "$0}' || true
+    run_as_report_owner git -C "$POOLY_REPO_DIR" rev-parse --short HEAD 2>/dev/null | awk '{print "Repo HEAD:              "$0}' || true
     [[ -f "$POOLY_REPO_DIR/VERSION" ]] && awk '{print "Repo VERSION:           "$0}' "$POOLY_REPO_DIR/VERSION" || true
   else
     echo "Repo state:             missing"
@@ -111,6 +119,7 @@ self_update(){
   echo "Auto update: ${POOLY_GUARD_AUTO_UPDATE:-1}"
   echo "Repo dir: $POOLY_REPO_DIR"
   echo "Install path: $POOLY_INSTALL_PATH"
+  echo "Git user: ${REPORT_OWNER:-$(id -un)}"
 
   if [[ "${POOLY_GUARD_AUTO_UPDATE:-1}" != "1" ]]; then
     echo "SKIP: auto update disabled"
@@ -134,28 +143,28 @@ self_update(){
   branch="${POOLY_GUARD_AUTO_UPDATE_BRANCH:-main}"
   remote_ref="origin/$branch"
 
-  before="$(git -C "$POOLY_REPO_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  before="$(run_as_report_owner git -C "$POOLY_REPO_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
   echo "Local repo before: $before"
 
-  if ! git -C "$POOLY_REPO_DIR" fetch --quiet --all --prune; then
+  if ! run_as_report_owner git -C "$POOLY_REPO_DIR" fetch --quiet --all --prune; then
     echo "FAIL: git fetch failed"
     echo "UPDATE RESULT: FAIL"
     return 1
   fi
 
-  if ! git -C "$POOLY_REPO_DIR" rev-parse --verify "$remote_ref" >/dev/null 2>&1; then
+  if ! run_as_report_owner git -C "$POOLY_REPO_DIR" rev-parse --verify "$remote_ref" >/dev/null 2>&1; then
     echo "FAIL: remote ref $remote_ref not found"
     echo "UPDATE RESULT: FAIL"
     return 1
   fi
 
-  if ! git -C "$POOLY_REPO_DIR" reset --hard "$remote_ref" >/dev/null; then
+  if ! run_as_report_owner git -C "$POOLY_REPO_DIR" reset --hard "$remote_ref" >/dev/null; then
     echo "FAIL: git reset to $remote_ref failed"
     echo "UPDATE RESULT: FAIL"
     return 1
   fi
 
-  after="$(git -C "$POOLY_REPO_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  after="$(run_as_report_owner git -C "$POOLY_REPO_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
   repo_version="$(cat "$POOLY_REPO_DIR/VERSION" 2>/dev/null || echo unknown)"
   echo "Local repo after:  $after"
   echo "Latest repo version: $repo_version"
