@@ -25,7 +25,7 @@ json_escape(){ python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'
 
 load_env(){
   [[ -f "$POOLY_GUARD_ENV" ]] || return 0
-  local owner mode group_w other_w
+  local owner mode mode3 group_digit other_digit
   owner="$(stat -c '%U' "$POOLY_GUARD_ENV" 2>/dev/null || echo unknown)"
   mode="$(stat -c '%a' "$POOLY_GUARD_ENV" 2>/dev/null || echo unknown)"
   if [[ "$owner" != "root" && "$owner" != "$REPORT_OWNER" ]]; then
@@ -33,9 +33,11 @@ load_env(){
     return 1
   fi
   if [[ "$mode" =~ ^[0-7]+$ ]]; then
-    group_w=$(( (8#$mode / 10) % 10 & 2 ))
-    other_w=$(( 8#$mode % 10 & 2 ))
-    if (( group_w || other_w )); then
+    mode3="${mode: -3}"
+    while [[ ${#mode3} -lt 3 ]]; do mode3="0$mode3"; done
+    group_digit="${mode3:1:1}"
+    other_digit="${mode3:2:1}"
+    if (( (group_digit & 2) || (other_digit & 2) )); then
       echo "FAIL: unsafe env permissions for $POOLY_GUARD_ENV: $mode"
       return 1
     fi
