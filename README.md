@@ -1,59 +1,40 @@
-# Pooly Server Guard v0.5.0-alpha1
+# Pooly Server Guard v0.5.0-alpha4.0
 
-Defensive hardening, baseline verification, drift detection, self-updating scheduled checks, Discord alerting, and non-destructive server health monitoring for the 4 Pooly SSDNodes servers.
+Defensive hardening, baseline verification, drift detection, self-updating scheduled checks, Discord alerting, report pruning, and non-destructive server health monitoring for the 4 Pooly SSDNodes servers.
 
 ## Current release
 
-Current release: `v0.5.0-alpha1`.
+Current release: `v0.5.0-alpha4.0`.
 
-## Stage 1 health monitoring
+## Purpose
 
-This release adds server health monitoring without any automatic cleanup.
+Pooly Server Guard checks that each node remains close to the known-good hardened baseline. It reports security drift, service drift, server-health warnings, failed systemd units, journal growth, and Discord alert delivery status.
 
-New command:
+## Current features
+
+- SSH/security baseline verification
+- service drift detection
+- failed systemd unit detection
+- server-health checks
+- safe report pruning for Pooly Server Guard reports only
+- memory pressure evidence capture
+- CPU/load evidence capture
+- Discord webhook embed alerts
+- journal growth visibility
+- timer mode visibility
+- run-lock/no-overlap protection
+- validated self-update before install
+- modular `lib/*.sh` architecture
+
+## Commands
 
 ```bash
+sudo ~/GPTlogs/pooly-server-guard.sh watch
 sudo ~/GPTlogs/pooly-server-guard.sh server-health
-```
-
-New watch output:
-
-```text
-POOLY SERVER HEALTH
-SERVER HEALTH RESULT: PASS/WARN/FAIL
-WATCH RESULT: PASS/WARN/FAIL
-```
-
-Health checks:
-
-- disk usage
-- inode usage
-- RAM pressure
-- swap usage
-- load per CPU
-- uptime
-- reboot-required flag
-- journal size
-- GPTlogs/report folder size
-
-Configurable defaults:
-
-```bash
-POOLY_ALERT_ON_WARN=1
-POOLY_DISK_WARN_PCT=80
-POOLY_DISK_FAIL_PCT=90
-POOLY_INODE_WARN_PCT=80
-POOLY_INODE_FAIL_PCT=90
-POOLY_RAM_WARN_PCT=85
-POOLY_RAM_FAIL_PCT=95
-POOLY_SWAP_WARN_PCT=20
-POOLY_SWAP_FAIL_PCT=50
-POOLY_LOAD_WARN_PER_CPU=2
-POOLY_LOAD_FAIL_PER_CPU=4
-POOLY_JOURNAL_WARN_MB=5120
-POOLY_JOURNAL_FAIL_MB=10240
-POOLY_GPTLOGS_WARN_MB=1024
-POOLY_GPTLOGS_FAIL_MB=2048
+sudo ~/GPTlogs/pooly-server-guard.sh journal-growth
+sudo ~/GPTlogs/pooly-server-guard.sh timer-status
+sudo ~/GPTlogs/pooly-server-guard.sh report-prune
+sudo ~/GPTlogs/pooly-server-guard.sh install-watch-timer
 ```
 
 ## Discord behavior
@@ -64,6 +45,29 @@ POOLY_GPTLOGS_FAIL_MB=2048
 
 `FAIL` means a security, service, or critical health check failed. FAIL exits non-zero and sends a failure alert.
 
-## Stage 2 plan
+PASS Discord messages are intentionally compact and may use Discord's silent notification flag when `POOLY_DISCORD_SUPPRESS_PASS=1`.
 
-After Stage 1 runs overnight, Stage 2 will add guarded cleanup for Pooly Server Guard's own report files only.
+## Timer behavior
+
+The active timer is controlled by:
+
+```bash
+POOLY_WATCH_ONCALENDAR="*:0/2"
+```
+
+The recommended production value is:
+
+```bash
+POOLY_WATCH_ONCALENDAR="*:0/10"
+```
+
+During active alpha testing, the 2-minute timer is useful for fast feedback.
+
+## Important alpha4.0 changes
+
+- Removed the runtime `git show` core-overlay loader.
+- Split the guard into `lib/*.sh` modules.
+- Added syntax validation for self-update before installing a new script.
+- Added hardened env-file ownership and permission checks.
+- Fixed journal shrink handling so journal cleanup does not create false growth WARN/FAIL alerts.
+- Added `TimeoutStartSec=120` to the systemd service.
