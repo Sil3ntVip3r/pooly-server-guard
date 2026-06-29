@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-VERSION="0.5.0-alpha4.0"
+VERSION="0.5.0-alpha4.0.1"
 REPORT_OWNER="${REPORT_OWNER:-pooly-sil3ntvip3r-admin}"
 REPORT_HOME="$(getent passwd "$REPORT_OWNER" 2>/dev/null | cut -d: -f6 || true)"
 POOLY_REPO_DIR="${POOLY_REPO_DIR:-${REPORT_HOME:-$HOME}/GPTrepos/pooly-server-guard}"
