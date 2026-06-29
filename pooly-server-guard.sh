@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-VERSION="0.5.0-alpha3.6"
+VERSION="0.5.0-alpha3.6.1"
 POOLY_CORE_REF="68ae1124c5a10d68662a853fdbb75e83cbcf2470"
 SSH_PORT="${SSH_PORT:-6200}"
 ADMIN_USERS=("poolyadmin" "pooly-sil3ntvip3r-admin")
@@ -20,16 +20,26 @@ ORIG_ARGS=("$@")
 CORE_TMP="$(mktemp)"
 cleanup_core(){ rm -f "$CORE_TMP"; }
 trap cleanup_core EXIT
-if ! git -C "$POOLY_REPO_DIR" show "$POOLY_CORE_REF:pooly-server-guard.sh" > "$CORE_TMP" 2>/dev/null; then
+
+core_git_show(){
+  if [[ ${EUID:-$(id -u)} -eq 0 && -n "${REPORT_OWNER:-}" && "$REPORT_OWNER" != "root" ]]; then
+    sudo -H -u "$REPORT_OWNER" git -C "$POOLY_REPO_DIR" show "$POOLY_CORE_REF:pooly-server-guard.sh"
+  else
+    git -C "$POOLY_REPO_DIR" show "$POOLY_CORE_REF:pooly-server-guard.sh"
+  fi
+}
+
+if ! core_git_show > "$CORE_TMP" 2>/dev/null; then
   echo "FAIL: could not load Pooly Server Guard core from repo ref $POOLY_CORE_REF"
   echo "Check repo path: $POOLY_REPO_DIR"
+  echo "Tried git as: ${REPORT_OWNER:-current-user} when running as root"
   exit 1
 fi
 set -- __pooly_source_only
 # shellcheck source=/dev/null
 source "$CORE_TMP" >/dev/null 2>&1 || true
 set -- "${ORIG_ARGS[@]}"
-VERSION="0.5.0-alpha3.6"
+VERSION="0.5.0-alpha3.6.1"
 
 eval "$(declare -f health_defaults | sed '1s/health_defaults/pooly_core_health_defaults/')"
 health_defaults(){
@@ -84,6 +94,7 @@ version_info(){
   section "POOLY SERVER GUARD VERSION"
   echo "Installed script version: $VERSION"
   echo "Core script ref:          $POOLY_CORE_REF"
+  echo "Core load method:        ${REPORT_OWNER:-current-user} git show"
   echo "Configured install path:  $POOLY_INSTALL_PATH"
   echo "Configured repo path:     $POOLY_REPO_DIR"
   echo "Configured timer:         $POOLY_WATCH_ONCALENDAR"
