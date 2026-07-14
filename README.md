@@ -1,14 +1,14 @@
-# Pooly Server Guard v0.5.0-alpha4.0
+# Pooly Server Guard v0.5.0-alpha4.1.0
 
-Defensive hardening, baseline verification, drift detection, self-updating scheduled checks, Discord alerting, report pruning, and non-destructive server health monitoring for the 4 Pooly SSDNodes servers.
+Defensive hardening, baseline verification, drift detection, self-updating scheduled checks, Discord alerting, report pruning, non-destructive server health monitoring, and observe-only memory-balloon detection for the 4 Pooly SSDNodes servers.
 
 ## Current release
 
-Current release: `v0.5.0-alpha4.0`.
+Current release: `v0.5.0-alpha4.1.0`.
 
 ## Purpose
 
-Pooly Server Guard checks that each node remains close to the known-good hardened baseline. It reports security drift, service drift, server-health warnings, failed systemd units, journal growth, and Discord alert delivery status.
+Pooly Server Guard checks that each node remains close to the known-good hardened baseline. It reports security drift, service drift, server-health warnings, failed systemd units, journal growth, host-driven memory balloon activity, and Discord alert delivery status.
 
 ## Current features
 
@@ -18,6 +18,7 @@ Pooly Server Guard checks that each node remains close to the known-good hardene
 - server-health checks
 - safe report pruning for Pooly Server Guard reports only
 - memory pressure evidence capture
+- observe-only virtio memory-balloon detection and bounded history
 - CPU/load evidence capture
 - Discord webhook embed alerts
 - journal growth visibility
@@ -31,11 +32,43 @@ Pooly Server Guard checks that each node remains close to the known-good hardene
 ```bash
 sudo ~/GPTlogs/pooly-server-guard.sh watch
 sudo ~/GPTlogs/pooly-server-guard.sh server-health
+sudo ~/GPTlogs/pooly-server-guard.sh balloon-status
+sudo ~/GPTlogs/pooly-server-guard.sh balloon-history 50
 sudo ~/GPTlogs/pooly-server-guard.sh journal-growth
 sudo ~/GPTlogs/pooly-server-guard.sh timer-status
 sudo ~/GPTlogs/pooly-server-guard.sh report-prune
 sudo ~/GPTlogs/pooly-server-guard.sh install-watch-timer
 ```
+
+## Memory-balloon monitoring
+
+Phase 1 is intentionally observe-only and disabled by default:
+
+```bash
+POOLY_BALLOON_MONITOR_ENABLED=0
+POOLY_BALLOON_WARN_MIB=1024
+POOLY_BALLOON_HISTORY_MAX_LINES=10000
+POOLY_BALLOON_LOCK_WAIT_SECONDS=2
+```
+
+When enabled, the guard reads cumulative Linux balloon, swap, major-fault, OOM, memory, and PSI counters. It stores an atomic protected baseline under `/etc/pooly/server-guard-state/balloon/` and reports transitions such as:
+
+```text
+BASELINE
+IDLE
+ACTIVE
+ACTIVE_CONTINUING
+CYCLE_COMPLETED
+DEFLATING
+RECOVERED
+COUNTER_RESET
+STATE_RESET
+ERROR
+```
+
+Balloon warnings are transition-based to avoid repeated Discord alerts during one event. Existing RAM and swap thresholds continue to determine overall server-health severity.
+
+Phase 1 does **not** run `swapoff`/`swapon`, change kernel settings, stop or restart services, kill processes, reboot the server, or add a second daemon. Remediation belongs to a later separately approved phase.
 
 ## Discord behavior
 
@@ -62,6 +95,17 @@ POOLY_WATCH_ONCALENDAR="*:0/10"
 ```
 
 During active alpha testing, the 2-minute timer is useful for fast feedback.
+
+## Important alpha4.1.0 changes
+
+- Added optional `lib/balloon.sh` observe-only monitoring.
+- Added `balloon-status` and `balloon-history` commands.
+- Added transition-based balloon WARN reporting to watch reports and Discord embeds.
+- Added atomic, validated, bounded balloon state under the existing protected state directory.
+- Isolated the optional balloon module in a subshell so module failures cannot abort remaining watch checks.
+- Kept the balloon module optional so rollback to Alpha4.0.1 remains possible after the feature branch removes it.
+- Added fixture, rollback, Discord, fault-isolation, syntax, and ShellCheck CI coverage.
+- Kept balloon monitoring disabled by default.
 
 ## Important alpha4.0 changes
 
