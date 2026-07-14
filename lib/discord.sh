@@ -68,22 +68,26 @@ def jdelta_full():
     return f"{m.group(1).strip().replace('baseline saved','baseline')} {m.group(2)}" if m else '?'
 def health(): return f"Disk {metric('DISK /:','disk')} | RAM {metric('RAM:','ram')} | Swap {metric('SWAP:','swap')} | Load/CPU {metric('LOAD:','load')}\nJournal {metric('JOURNAL SIZE:','mb')} | Δ {jdelta_full()} | Reports {metric('GPTLOGS SIZE:','mb')}"
 def pass_health(): return f"Disk {metric_value('DISK /:','disk')} | RAM {metric_value('RAM:','ram')} | Load {metric_value('LOAD:','load')} | Logs {metric_value('JOURNAL SIZE:','mb')} | Δ {jdelta_value()}"
-def checks(): return f"Security {result('RESULT')} | Baseline {result('BASELINE RESULT')} | Server {result('SERVER HEALTH RESULT')} | Services {result('SERVICE HEALTH RESULT')}\nTimer {result('TIMER RESULT')} | Journal Δ {result('JOURNAL GROWTH RESULT')} | Failed units {result('FAILED SERVICES RESULT')}"
+def checks(): return f"Security {result('RESULT')} | Baseline {result('BASELINE RESULT')} | Server {result('SERVER HEALTH RESULT')} | Services {result('SERVICE HEALTH RESULT')}\nTimer {result('TIMER RESULT')} | Balloon {result('BALLOON RESULT')} | Failed units {result('FAILED SERVICES RESULT')}"
 def pass_checks():
     sv=result('SERVICE HEALTH RESULT'); failed=result('FAILED SERVICES RESULT'); jg=result('JOURNAL GROWTH RESULT')
     failed_units='0' if failed=='PASS' else failed
-    overall='OK' if result('RESULT')=='PASS' and result('BASELINE RESULT')=='PASS' and result('SERVER HEALTH RESULT')=='PASS' and sv=='PASS' and failed=='PASS' and jg in ('PASS','?') else 'Review'
+    overall='OK' if result('RESULT')=='PASS' and result('BASELINE RESULT')=='PASS' and result('SERVER HEALTH RESULT')=='PASS' and sv=='PASS' and failed=='PASS' and jg in ('PASS','?') and result('BALLOON RESULT') in ('PASS','?') else 'Review'
     return f"Checks {overall} | Services {'OK' if sv=='PASS' else sv} | Failed units {failed_units}"
 def causes():
     out=[]
     for x in lines:
         if re.match(r'^(DISK /|DISK WORST|INODES /|RAM:|SWAP:|LOAD:|REBOOT REQUIRED:|JOURNAL SIZE:|JOURNAL GROWTH:|GPTLOGS SIZE:)',x) and ('— WARN' in x or '— FAIL' in x): out.append(x)
     for x in lines:
-        if re.match(r'^(UPDATE RESULT|RESULT|BASELINE RESULT|SERVER HEALTH RESULT|TIMER RESULT|JOURNAL GROWTH RESULT|REPORT PRUNE RESULT|PORT RESULT|KEYS RESULT|SSHD DRIFT RESULT|UFW DRIFT RESULT|SERVICE RESULT|SERVICE HEALTH RESULT|FAILED SERVICES RESULT|WATCH RESULT):',x) and re.search(r':\s*(WARN|FAIL|SKIP|SKIP_LOCKED)',x): out.append(x)
+        if re.match(r'^(UPDATE RESULT|RESULT|BASELINE RESULT|SERVER HEALTH RESULT|BALLOON RESULT|TIMER RESULT|JOURNAL GROWTH RESULT|REPORT PRUNE RESULT|PORT RESULT|KEYS RESULT|SSHD DRIFT RESULT|UFW DRIFT RESULT|SERVICE RESULT|SERVICE HEALTH RESULT|FAILED SERVICES RESULT|WATCH RESULT):',x) and re.search(r':\s*(WARN|FAIL|SKIP|SKIP_LOCKED)',x): out.append(x)
+    if result('BALLOON RESULT')=='WARN':
+        for prefix in ('BALLOON STATE:','BALLOON OUTSTANDING:','BALLOON INFLATE SINCE LAST CHECK:','BALLOON DEFLATE SINCE LAST CHECK:','SWAP-OUT DELTA:','OOM KILL DELTA:'):
+            value=first(prefix)
+            if value: out.append(value)
     clean=[]
     for x in out:
         if x not in clean: clean.append(x)
-    return '\n'.join(clean[:6]) or 'Open the full report for details.'
+    return '\n'.join(clean[:8]) or 'Open the full report for details.'
 def first_after(marker):
     for i,x in enumerate(lines):
         if x.strip()==marker and i+2 < len(lines): return lines[i+2].strip()
@@ -103,11 +107,16 @@ def proc(line,label):
     return f"{label}: {name}\nCPU {cpu}% | MEM {mem}% | RSS {gb(rss)}{hint}"
 def evidence():
     out=[]
+    if result('BALLOON RESULT')=='WARN':
+        vals=[first(x) for x in ('BALLOON STATE:','BALLOON OUTSTANDING:','MEM AVAILABLE:','RAM PRESSURE:','SWAP USED:','SWAP-OUT DELTA:')]
+        vals=[x for x in vals if x]
+        if vals: out.append('\n'.join(vals))
     if any((x.startswith('RAM:') or x.startswith('SWAP:')) and ('— WARN' in x or '— FAIL' in x) for x in lines): out.append(proc(first_after('TOP MEMORY PROCESSES BY RSS'),'Top memory'))
     if any(x.startswith('LOAD:') and ('— WARN' in x or '— FAIL' in x) for x in lines): out.append(proc(first_after('TOP CPU PROCESSES'),'Top CPU'))
     return '\n\n'.join([x for x in out if x])
 def action():
     c=causes()
+    if result('BALLOON RESULT')=='WARN': return 'Host-side memory ballooning was detected. Review balloon state, available RAM, swap growth, and the full report. Phase 1 performs no remediation.'
     if re.search(r'^(DISK /|DISK WORST|JOURNAL SIZE:|JOURNAL GROWTH:|GPTLOGS SIZE:)',c,re.M): return 'Storage/logs crossed a threshold. Full details are in the report.'
     if re.search(r'^(RAM:|SWAP:)',c,re.M): return 'Memory pressure crossed a threshold. Full process details are in the report.'
     if re.search(r'^LOAD:',c,re.M): return 'CPU/load pressure crossed a threshold. Full process details are in the report.'
