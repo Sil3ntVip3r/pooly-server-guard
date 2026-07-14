@@ -1,0 +1,51 @@
+name: shell-tests
+
+on:
+  push:
+    branches:
+      - main
+      - 'feature/**'
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
+      - name: Bash syntax
+        run: |
+          bash -n pooly-server-guard.sh install-local.sh
+          bash -n lib/*.sh
+          bash -n tests/*.sh
+
+      - name: ShellCheck changed runtime and tests
+        run: |
+          shellcheck --severity=error -x \
+            pooly-server-guard.sh \
+            lib/balloon.sh \
+            lib/main.sh \
+            lib/discord.sh \
+            tests/*.sh
+
+      - name: Balloon observe fixtures
+        run: bash tests/balloon-observe-test.sh
+
+      - name: Optional-module rollback
+        run: bash tests/update-rollback-test.sh
+
+      - name: Watch fault isolation
+        run: bash tests/watch-balloon-integration-test.sh
+
+      - name: Discord balloon payload
+        run: bash tests/discord-balloon-test.sh
