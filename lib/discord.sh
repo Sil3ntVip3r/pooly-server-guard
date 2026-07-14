@@ -72,8 +72,11 @@ def checks(): return f"Security {result('RESULT')} | Baseline {result('BASELINE 
 def pass_checks():
     sv=result('SERVICE HEALTH RESULT'); failed=result('FAILED SERVICES RESULT'); jg=result('JOURNAL GROWTH RESULT')
     failed_units='0' if failed=='PASS' else failed
-    overall='OK' if result('RESULT')=='PASS' and result('BASELINE RESULT')=='PASS' and result('SERVER HEALTH RESULT')=='PASS' and sv=='PASS' and failed=='PASS' and jg in ('PASS','?') and result('BALLOON RESULT') in ('PASS','?') else 'Review'
-    return f"Checks {overall} | Services {'OK' if sv=='PASS' else sv} | Failed units {failed_units}"
+    balloon_line=first('BALLOON STATE:')
+    balloon_state=balloon_line.split(':',1)[1].strip() if balloon_line else '?'
+    balloon_ok=balloon_state in ('?','DISABLED','UNSUPPORTED','BASELINE','IDLE','RECOVERED','COUNTER_RESET')
+    overall='OK' if result('RESULT')=='PASS' and result('BASELINE RESULT')=='PASS' and result('SERVER HEALTH RESULT')=='PASS' and sv=='PASS' and failed=='PASS' and jg in ('PASS','?') and result('BALLOON RESULT') in ('PASS','?') and balloon_ok else 'Review'
+    return f"Checks {overall} | Services {'OK' if sv=='PASS' else sv} | Failed units {failed_units}\nBalloon {balloon_state}"
 def causes():
     out=[]
     for x in lines:
@@ -116,7 +119,10 @@ def evidence():
     return '\n\n'.join([x for x in out if x])
 def action():
     c=causes()
-    if result('BALLOON RESULT')=='WARN': return 'Host-side memory ballooning was detected. Review balloon state, available RAM, swap growth, and the full report. Phase 1 performs no remediation.'
+    balloon_line=first('BALLOON STATE:')
+    balloon_state=balloon_line.split(':',1)[1].strip() if balloon_line else ''
+    if result('BALLOON RESULT')=='WARN' and balloon_state=='OOM_OBSERVED' and status!='FAIL': return 'The OOM-kill counter increased without significant balloon activity. Review the kernel journal, memory pressure, and the full report.'
+    if result('BALLOON RESULT')=='WARN' and status!='FAIL': return 'Host-side memory ballooning was detected. Review balloon state, available RAM, swap growth, and the full report. Phase 1 performs no remediation.'
     if re.search(r'^(DISK /|DISK WORST|JOURNAL SIZE:|JOURNAL GROWTH:|GPTLOGS SIZE:)',c,re.M): return 'Storage/logs crossed a threshold. Full details are in the report.'
     if re.search(r'^(RAM:|SWAP:)',c,re.M): return 'Memory pressure crossed a threshold. Full process details are in the report.'
     if re.search(r'^LOAD:',c,re.M): return 'CPU/load pressure crossed a threshold. Full process details are in the report.'
