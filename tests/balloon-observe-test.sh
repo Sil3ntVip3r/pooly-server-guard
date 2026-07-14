@@ -143,6 +143,7 @@ assert_eq "$(status_rc "$res")" "0"
 assert_contains "$(status_output "$res")" "BALLOON STATE: ACTIVE_CONTINUING"
 assert_contains "$(status_output "$res")" "BALLOON RESULT: PASS"
 
+# Deflate one GiB while two GiB remain outstanding.
 deflate_partial=$((BASE + THRESHOLD_PAGES))
 write_vmstat "$inflate_cont" "$deflate_partial" 30 120 310 410 0
 write_meminfo 33554432 14800000
@@ -156,6 +157,7 @@ res="$(run_status)"
 assert_eq "$(status_rc "$res")" "0"
 assert_contains "$(status_output "$res")" "BALLOON STATE: RECOVERED"
 
+# A full cycle between samples must warn once without claiming an exact event count.
 cycle=$((THRESHOLD_PAGES*2))
 write_vmstat $((inflate_cont+cycle)) $((inflate_cont+cycle)) 50 140 400 500 0
 res="$(run_status)"
@@ -163,23 +165,33 @@ assert_eq "$(status_rc "$res")" "2"
 assert_contains "$(status_output "$res")" "BALLOON STATE: CYCLE_COMPLETED"
 assert_contains "$(status_output "$res")" "one or more complete balloon cycles occurred between checks"
 
+# Next unchanged sample is idle and must not repeat the warning.
 res="$(run_status)"
 assert_eq "$(status_rc "$res")" "0"
 assert_contains "$(status_output "$res")" "BALLOON STATE: IDLE"
 assert_contains "$(status_output "$res")" "BALLOON RESULT: PASS"
+history_before_idle="$(wc -l < "$POOLY_BALLOON_STATE_DIR/history.tsv" | tr -d ' ')"
+res="$(run_status)"
+history_after_idle="$(wc -l < "$POOLY_BALLOON_STATE_DIR/history.tsv" | tr -d ' ')"
+assert_eq "$history_after_idle" "$history_before_idle"
 
+# OOM counter changes must warn without being misattributed to ballooning.
 write_vmstat $((inflate_cont+cycle)) $((inflate_cont+cycle)) 50 140 400 500 1
 res="$(run_status)"
 assert_eq "$(status_rc "$res")" "2"
+assert_contains "$(status_output "$res")" "BALLOON STATE: OOM_OBSERVED"
 assert_contains "$(status_output "$res")" "OOM KILL DELTA: 1"
+assert_contains "$(status_output "$res")" "without significant balloon activity"
 assert_contains "$(status_output "$res")" "BALLOON RESULT: WARN"
 
+# Missing PSI is supported and yields zero values.
 rm -f "$POOLY_BALLOON_PSI_PATH"
 res="$(run_status)"
 assert_eq "$(status_rc "$res")" "0"
 assert_contains "$(status_output "$res")" "MEMORY PSI SOME/FULL: 0 / 0"
 write_psi
 
+# Boot/counter reset must not produce negative deltas.
 printf 'boot-b\n' > "$POOLY_BALLOON_BOOT_ID_PATH"
 write_vmstat 10 10 0 1 1 1 0
 res="$(run_status)"
@@ -187,6 +199,18 @@ assert_eq "$(status_rc "$res")" "0"
 assert_contains "$(status_output "$res")" "BALLOON STATE: COUNTER_RESET"
 assert_not_contains "$(status_output "$res")" "SINCE LAST CHECK: -"
 
+# A reboot/counter reset must still warn if the host is already ballooning.
+printf 'boot-c\n' > "$POOLY_BALLOON_BOOT_ID_PATH"
+write_vmstat $((THRESHOLD_PAGES*2)) 0 0 1 1 1 0
+res="$(run_status)"
+assert_eq "$(status_rc "$res")" "2"
+assert_contains "$(status_output "$res")" "BALLOON STATE: ACTIVE"
+assert_contains "$(status_output "$res")" "counters changed while significant host ballooning is active"
+res="$(run_status)"
+assert_eq "$(status_rc "$res")" "0"
+assert_contains "$(status_output "$res")" "BALLOON STATE: ACTIVE_CONTINUING"
+
+# Corrupt state is treated as data, never sourced or executed.
 pwned="$TMP/pwned"
 printf '$(touch %s)\n' "$pwned" > "$POOLY_BALLOON_STATE_DIR/state.tsv"
 write_vmstat 20 20 0 2 2 2 0
@@ -195,6 +219,7 @@ assert_eq "$(status_rc "$res")" "2"
 assert_contains "$(status_output "$res")" "BALLOON STATE: STATE_RESET"
 [[ ! -e "$pwned" ]] || fail "corrupt state executed shell content"
 
+# Real Node003 counters captured during the July 13 balloon event.
 reset_fixture
 write_vmstat 1452704256 1452704256 109267 21392 1393809 114584 0
 write_meminfo 83733604 15402804
@@ -216,6 +241,7 @@ write_meminfo 83800000 15205420
 res="$(run_status)"
 assert_contains "$(status_output "$res")" "BALLOON STATE: RECOVERED"
 
+# History is bounded exactly to the configured line limit.
 export POOLY_BALLOON_HISTORY_MAX_LINES=3
 for n in 1 2 3 4 5; do
   write_vmstat $((1473417216+n)) $((1473417216+n)) 0 $((21600+n)) $((1443257+n)) $((115000+n)) 0
@@ -223,9 +249,11 @@ for n in 1 2 3 4 5; do
 done
 assert_eq "$(wc -l < "$POOLY_BALLOON_STATE_DIR/history.tsv" | tr -d ' ')" "3"
 
+# History command is read-only and emits the expected header.
 out="$(balloon_history 2)"
 assert_contains "$out" $'UTC\tSTATE\tRESULT'
 
+# Dangerous state directory targets are refused before any write.
 old_state_dir="$POOLY_BALLOON_STATE_DIR"
 export POOLY_BALLOON_STATE_DIR="/"
 write_vmstat 100 100
@@ -234,6 +262,7 @@ assert_eq "$(status_rc "$res")" "2"
 assert_contains "$(status_output "$res")" "refusing unsafe balloon state directory"
 export POOLY_BALLOON_STATE_DIR="$old_state_dir"
 
+# Symlinked state targets are refused.
 rm -rf "$TMP/state"
 mkdir -p "$TMP/state" "$TMP/elsewhere"
 ln -s "$TMP/elsewhere" "$POOLY_BALLOON_STATE_DIR"
@@ -242,10 +271,12 @@ res="$(run_status)"
 assert_eq "$(status_rc "$res")" "2"
 assert_contains "$(status_output "$res")" "refusing symlinked balloon state path"
 
+# Static safety boundary: Phase 1 may not contain remediation or service-control actions.
 if grep -En '\b(swapoff|swapon|reboot|shutdown|pkill|killall)\b|systemctl[[:space:]]+(stop|restart|disable)|/proc/sys/.+>' "$ROOT/lib/balloon.sh"; then
   fail "prohibited remediation action found in balloon module"
 fi
 
+# Repeated sourcing and sequential sampling must not leak its lock descriptor.
 reset_fixture
 export POOLY_BALLOON_HISTORY_MAX_LINES=10000
 write_vmstat 100 100
@@ -256,9 +287,16 @@ done
 fd_count="$(find "/proc/$$/fd" -maxdepth 1 -type l 2>/dev/null | wc -l | tr -d ' ')"
 (( fd_count < 64 )) || fail "unexpected file descriptor growth: $fd_count"
 
+# Two concurrent samples must leave one valid state line and parseable history.
 write_vmstat 1000 1000
-(run_status >/dev/null) & p1=$!
-(run_status >/dev/null) & p2=$!
+(
+  run_status >/dev/null
+) &
+p1=$!
+(
+  run_status >/dev/null
+) &
+p2=$!
 wait "$p1"
 wait "$p2"
 assert_eq "$(wc -l < "$POOLY_BALLOON_STATE_DIR/state.tsv" | tr -d ' ')" "1"
