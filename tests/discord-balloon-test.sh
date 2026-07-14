@@ -96,6 +96,67 @@ assert p.get('flags') == 4096
 embed=p['embeds'][0]
 fields={f['name']:f['value'] for f in embed['fields']}
 assert 'Checks OK' in fields['Checks']
+assert 'Balloon DISABLED' in fields['Checks']
+PY
+
+sed 's/BALLOON STATE: DISABLED/BALLOON STATE: ACTIVE_CONTINUING/' "$TMP/pass.txt" > "$TMP/pass-active.txt"
+discord_watch_payload_file PASS pooly-ssdnodes-003-tokyo2 003 /tmp/report.txt "$TMP/pass-active.txt" "$TMP/pass-active.json"
+python3 - "$TMP/pass-active.json" <<'PY'
+import json, sys
+p=json.load(open(sys.argv[1]))
+fields={f['name']:f['value'] for f in p['embeds'][0]['fields']}
+assert 'Checks Review' in fields['Checks']
+assert 'Balloon ACTIVE_CONTINUING' in fields['Checks']
+PY
+
+cat > "$TMP/fail.txt" <<'FAIL_FIXTURE'
+RESULT: FAIL
+BASELINE RESULT: PASS
+DISK /: 41% used — PASS
+RAM: 82% pressure — PASS
+SWAP: 28% used — WARN
+LOAD: 0.10 on 12 CPU cores = 0.01 per CPU — PASS
+JOURNAL SIZE: 4500M — PASS
+JOURNAL GROWTH: +0M since last watch — PASS
+GPTLOGS SIZE: 50M — PASS
+SERVER HEALTH RESULT: WARN
+BALLOON STATE: ACTIVE
+BALLOON OUTSTANDING: 63.25 GiB
+BALLOON RESULT: WARN
+SSHD DRIFT RESULT: FAIL
+SERVICE HEALTH RESULT: PASS
+FAILED SERVICES RESULT: PASS
+WATCH RESULT: FAIL
+FAIL_FIXTURE
+
+discord_watch_payload_file FAIL pooly-ssdnodes-003-tokyo2 003 /tmp/report.txt "$TMP/fail.txt" "$TMP/fail.json"
+python3 - "$TMP/fail.json" <<'PY'
+import json, sys
+p=json.load(open(sys.argv[1]))
+fields={f['name']:f['value'] for f in p['embeds'][0]['fields']}
+assert 'memory pressure' in fields['Action'].lower()
+assert 'host-side memory ballooning' not in fields['Action'].lower()
+PY
+
+cat > "$TMP/oom.txt" <<'OOM_FIXTURE'
+RESULT: PASS
+BASELINE RESULT: PASS
+SERVER HEALTH RESULT: PASS
+BALLOON STATE: OOM_OBSERVED
+OOM KILL DELTA: 1
+BALLOON RESULT: WARN
+SERVICE HEALTH RESULT: PASS
+FAILED SERVICES RESULT: PASS
+WATCH RESULT: WARN
+OOM_FIXTURE
+
+discord_watch_payload_file WARN pooly-ssdnodes-003-tokyo2 003 /tmp/report.txt "$TMP/oom.txt" "$TMP/oom.json"
+python3 - "$TMP/oom.json" <<'PY'
+import json, sys
+p=json.load(open(sys.argv[1]))
+fields={f['name']:f['value'] for f in p['embeds'][0]['fields']}
+assert 'oom-kill counter increased' in fields['Action'].lower()
+assert 'host-side memory ballooning' not in fields['Action'].lower()
 PY
 
 printf 'PASS: Discord balloon payload tests\n'
