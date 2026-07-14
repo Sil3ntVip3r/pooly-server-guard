@@ -60,8 +60,10 @@ balloon_watch_section(){
     echo "WARN: balloon module exited $rc without a valid result; remaining checks will continue"
     echo "BALLOON STATE: ERROR"
     echo "BALLOON RESULT: WARN"
-  elif [[ "$rc" != "0" && "$rc" != "1" && "$rc" != "2" ]]; then
-    echo "WARN: balloon module returned unexpected exit code $rc"
+  elif ! { [[ "$result" == "PASS" && "$rc" == "0" ]] || [[ "$result" == "WARN" && "$rc" == "2" ]] || [[ "$result" == "FAIL" && "$rc" == "1" ]]; }; then
+    echo "WARN: balloon module result/exit mismatch ($result/$rc); remaining checks will continue"
+    echo "BALLOON STATE: ERROR"
+    echo "BALLOON RESULT: WARN"
   fi
   rm -f "$tmp"
   return 0
