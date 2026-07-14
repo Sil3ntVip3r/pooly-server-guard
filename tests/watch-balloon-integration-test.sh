@@ -10,8 +10,9 @@ section(){ printf '\n== %s ==\n' "$*"; }
 source "$ROOT/lib/main.sh"
 
 fail(){ echo "FAIL: $*" >&2; exit 1; }
-assert_contains(){ [[ "$1" == *"$2"* ]] || fail "expected output to contain: $2"; }
+assert_contains(){ [[ "$1" == *"$2"* ]] || fail "expected output to contain: $2\n$out"; }
 
+# A nounset or explicit exit inside the optional module must not terminate the parent watch shell.
 balloon_status(){ echo "BALLOON SUPPORTED: yes"; echo "$UNBOUND_BALLOON_TEST"; }
 out="$(balloon_watch_section)"
 assert_contains "$out" "BALLOON STATE: ERROR"
@@ -19,11 +20,20 @@ assert_contains "$out" "BALLOON RESULT: WARN"
 echo parent-still-running > "$TMP/parent-marker"
 [[ -f "$TMP/parent-marker" ]] || fail "parent shell did not continue after optional module failure"
 
+# A valid WARN result with exit code 2 is accepted without fallback duplication.
 balloon_status(){ section "POOLY MEMORY BALLOON"; echo "BALLOON STATE: ACTIVE"; echo "BALLOON RESULT: WARN"; return 2; }
 out="$(balloon_watch_section)"
 assert_contains "$out" "BALLOON STATE: ACTIVE"
 [[ "$(grep -c '^BALLOON RESULT:' <<< "$out")" == "1" ]] || fail "valid WARN result was duplicated"
 
+# A result/exit mismatch must fail open as WARN and preserve the parent shell.
+balloon_status(){ section "POOLY MEMORY BALLOON"; echo "BALLOON STATE: IDLE"; echo "BALLOON RESULT: PASS"; return 1; }
+out="$(balloon_watch_section)"
+assert_contains "$out" "result/exit mismatch (PASS/1)"
+assert_contains "$out" "BALLOON STATE: ERROR"
+assert_contains "$out" "BALLOON RESULT: WARN"
+
+# Run the real guard_watch orchestrator with all non-balloon checks stubbed.
 REPORT_DIR="$TMP/reports"
 REPORT_OWNER="$(id -un)"
 POOLY_ALERT_ON_WARN=0
