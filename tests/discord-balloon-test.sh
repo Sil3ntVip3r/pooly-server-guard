@@ -13,7 +13,7 @@ VERSION='0.5.0-alpha4.1.0'
 # shellcheck source=../lib/discord.sh
 source "$ROOT/lib/discord.sh"
 
-cat > "$TMP/watch.txt" <<'REPORT'
+cat > "$TMP/watch.txt" <<'WATCH_FIXTURE'
 RESULT: PASS
 BASELINE RESULT: PASS
 DISK /: 41% used — PASS
@@ -46,7 +46,7 @@ SERVICE RESULT: PASS
 SERVICE HEALTH RESULT: PASS
 FAILED SERVICES RESULT: PASS
 WATCH RESULT: WARN
-REPORT
+WATCH_FIXTURE
 
 discord_watch_payload_file WARN pooly-ssdnodes-003-tokyo2 003 /tmp/report.txt "$TMP/watch.txt" "$TMP/payload.json"
 python3 - "$TMP/payload.json" <<'PY'
@@ -68,7 +68,7 @@ for field in embed['fields']:
 assert len(embed['description']) <= 4096
 PY
 
-cat > "$TMP/pass.txt" <<'REPORT'
+cat > "$TMP/pass.txt" <<'PASS_FIXTURE'
 RESULT: PASS
 BASELINE RESULT: PASS
 DISK /: 41% used — PASS
@@ -86,7 +86,7 @@ JOURNAL GROWTH RESULT: PASS
 SERVICE HEALTH RESULT: PASS
 FAILED SERVICES RESULT: PASS
 WATCH RESULT: PASS
-REPORT
+PASS_FIXTURE
 
 discord_watch_payload_file PASS pooly-ssdnodes-001-toronto 001 /tmp/report.txt "$TMP/pass.txt" "$TMP/pass.json"
 python3 - "$TMP/pass.json" <<'PY'
