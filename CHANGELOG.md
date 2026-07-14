@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.5.0-alpha4.1.0
+
+### Added
+
+- Added optional, observe-only virtio memory-balloon monitoring in `lib/balloon.sh`.
+- Added `balloon-status` and `balloon-history` commands.
+- Added atomic protected balloon state and bounded history under `/etc/pooly/server-guard-state/balloon/`.
+- Added transition-based balloon event states and Discord evidence.
+- Added fixture, rollback, Discord, fault-isolation, syntax, and ShellCheck CI tests.
+
+### Safety
+
+- Balloon monitoring is disabled by default.
+- Phase 1 performs no swap, service, kernel, process, reboot, or systemd remediation.
+- The optional module runs in an isolated subshell so module failures cannot abort the remaining watch checks.
+- The module is not a required startup or release-validation dependency, preserving rollback to Alpha4.0.1.
+
 ## v0.4.9
 
 ### Changed
