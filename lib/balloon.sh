@@ -339,9 +339,15 @@ balloon_status(){
       state="BASELINE"
     fi
   elif [[ "$prev_boot" != "$boot_id" ]] || (( inflate < prev_inflate || deflate < prev_deflate || migrate < prev_migrate || pswpin < prev_pswpin || pswpout < prev_pswpout || pgmajfault < prev_pgmajfault || oom_kill < prev_oom )); then
-    state="COUNTER_RESET"
     reset=1
-    note="boot identity or one or more cumulative counters changed"
+    if (( outstanding_pages >= threshold_pages )); then
+      state="ACTIVE"
+      result="WARN"
+      note="boot identity or cumulative counters changed while significant host ballooning is active"
+    else
+      state="COUNTER_RESET"
+      note="boot identity or one or more cumulative counters changed"
+    fi
   else
     delta_inflate=$((inflate-prev_inflate))
     delta_deflate=$((deflate-prev_deflate))
@@ -380,7 +386,12 @@ balloon_status(){
 
     if (( delta_oom > 0 )); then
       result="WARN"
-      if [[ -n "$note" ]]; then note="$note; OOM kill counter increased"; else note="OOM kill counter increased"; fi
+      if (( outstanding_pages >= threshold_pages || prev_outstanding >= threshold_pages || delta_inflate >= threshold_pages || delta_deflate >= threshold_pages || prev_active == 1 )); then
+        if [[ -n "$note" ]]; then note="$note; OOM kill counter increased during balloon activity"; else note="OOM kill counter increased during balloon activity"; fi
+      else
+        state="OOM_OBSERVED"
+        note="OOM kill counter increased without significant balloon activity"
+      fi
     fi
   fi
 
@@ -398,16 +409,22 @@ balloon_status(){
     note="unable to persist balloon state atomically"
   fi
 
-  local history_line
-  printf -v history_line '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
-    "$epoch" "$utc" "$boot_id" "$state" "$result" "$inflate" "$deflate" "$outstanding_pages" \
-    "$delta_inflate" "$delta_deflate" "$mem_available_kib" "$ram_pressure_pct" "$swap_used_kib" \
-    "$swap_pct" "$delta_pswpin" "$delta_pswpout" "$delta_pgmajfault" "$delta_oom" "$psi_some" "$psi_full" "$page_size"
-  if ! balloon_append_history "$history_file" "$POOLY_BALLOON_HISTORY_MAX_LINES" "$history_line"; then
-    history_write_ok=0
-    state="ERROR"
-    result="WARN"
-    note="unable to persist bounded balloon history"
+  local history_line record_history=0
+  if [[ "$state" != "$prev_state" || "$previous_status" != "valid" ]] || \
+    (( delta_inflate > 0 || delta_deflate > 0 || delta_migrate > 0 || delta_pswpin > 0 || delta_pswpout > 0 || delta_pgmajfault > 0 || delta_oom > 0 )); then
+    record_history=1
+  fi
+  if (( record_history == 1 )); then
+    printf -v history_line '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
+      "$epoch" "$utc" "$boot_id" "$state" "$result" "$inflate" "$deflate" "$outstanding_pages" \
+      "$delta_inflate" "$delta_deflate" "$mem_available_kib" "$ram_pressure_pct" "$swap_used_kib" \
+      "$swap_pct" "$delta_pswpin" "$delta_pswpout" "$delta_pgmajfault" "$delta_oom" "$psi_some" "$psi_full" "$page_size"
+    if ! balloon_append_history "$history_file" "$POOLY_BALLOON_HISTORY_MAX_LINES" "$history_line"; then
+      history_write_ok=0
+      state="ERROR"
+      result="WARN"
+      note="unable to persist bounded balloon history"
+    fi
   fi
   if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
     chown root:root "$state_file" "$history_file" 2>/dev/null || { state="ERROR"; result="WARN"; note="unable to enforce root ownership on balloon state"; }
@@ -429,7 +446,9 @@ balloon_status(){
   echo "OOM KILL DELTA: $delta_oom"
   echo "MEMORY PSI SOME/FULL: $psi_some / $psi_full"
   [[ "$reset" == "1" ]] && echo "INFO: balloon counters were re-baselined after reset"
-  [[ -n "$note" ]] && echo "WARN: $note"
+  if [[ -n "$note" ]]; then
+    if [[ "$result" == "WARN" || "$result" == "FAIL" ]]; then echo "WARN: $note"; else echo "INFO: $note"; fi
+  fi
   [[ "$state_write_ok" == "1" && "$history_write_ok" == "1" ]] || echo "WARN: balloon state persistence is degraded"
   echo "BALLOON RESULT: $result"
   status_return "$result"
