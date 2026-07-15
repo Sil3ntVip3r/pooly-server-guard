@@ -86,7 +86,7 @@ Phase 1 does **not** run `swapoff`/`swapon`, change kernel settings, stop or res
 
 PASS Discord messages are intentionally compact and may use Discord's silent notification flag when `POOLY_DISCORD_SUPPRESS_PASS=1`.
 
-The webhook URL is supplied to `curl` through protected standard input rather than as a process argument. This prevents ordinary process snapshots and `/proc/<pid>/cmdline` collection from exposing the webhook token. A webhook captured by an older release must still be revoked and replaced; changing transport does not invalidate an already exposed credential.
+The webhook URL is supplied to `curl` through protected standard input rather than as a process argument, and the webhook variable is removed from the child `curl` environment. This prevents ordinary process snapshots and `/proc/<pid>/cmdline` collection from exposing the webhook token. A webhook captured by an older release must still be revoked and replaced; changing transport does not invalidate an already exposed credential.
 
 ## Timer behavior
 
