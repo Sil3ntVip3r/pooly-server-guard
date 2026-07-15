@@ -13,7 +13,7 @@ load_env(){ return 0; }
 json_escape(){ python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'; }
 POOLY_GUARD_ENV="$TMP/server-guard.env"
 POOLY_DISCORD_ENABLED=1
-POOLY_DISCORD_WEBHOOK='https://discord.com/api/webhooks/123456789/TEST_SECRET_TOKEN_abcdef'
+POOLY_DISCORD_WEBHOOK='https://discord.com/api/webhooks/123456789/TEST_TOKEN'
 export POOLY_DISCORD_WEBHOOK
 
 mkdir -p "$TMP/bin"
