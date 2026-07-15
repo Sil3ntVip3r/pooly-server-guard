@@ -76,6 +76,10 @@ Balloon history is event-focused. Ordinary idle swap-in and page-fault movement 
 
 Phase 1 does **not** run `swapoff`/`swapon`, change kernel settings, stop or restart services, kill processes, reboot the server, or add a second daemon. Remediation belongs to a later separately approved phase.
 
+### Fleet rollout
+
+The monitor is safe to enable on all four SSDNodes hosts because Phase 1 is read-only with respect to memory, swap, services, and kernel state. Roll out one node at a time, confirm one complete `watch` report and timer cycle, then continue to the next node. Keep remediation disabled; this release only identifies balloon activity and preserves evidence.
+
 ## Discord behavior
 
 `PASS` means security, drift, service, and server-health checks are clean.
