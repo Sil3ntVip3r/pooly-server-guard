@@ -15,7 +15,7 @@
 - Detects a completed balloon cycle even when significant inflation is active again at the next sample.
 - Prevents `health`, `save-report`, and `balloon-status` from advancing scheduled balloon alert state.
 - Prevents ordinary idle swap/page-fault noise from filling balloon event history.
-- Prevents Discord webhook URLs from appearing in `curl` process arguments by supplying the URL through protected standard input.
+- Prevents Discord webhook URLs from appearing in `curl` process arguments or the child `curl` environment by supplying the URL through protected standard input.
 
 ### Safety
 
