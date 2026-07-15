@@ -12,6 +12,7 @@ source "$ROOT/lib/main.sh"
 fail(){ echo "FAIL: $*" >&2; exit 1; }
 assert_contains(){ [[ "$1" == *"$2"* ]] || fail "expected output to contain: $2
 $out"; }
+assert_not_contains(){ [[ "$1" != *"$2"* ]] || fail "expected output not to contain: $2"; }
 assert_eq(){ [[ "$1" == "$2" ]] || fail "expected '$2', got '$1'"; }
 
 # A nounset or explicit exit inside the optional module must not terminate the parent watch shell.
@@ -25,6 +26,9 @@ echo parent-still-running > "$TMP/parent-marker"
 # The wrapper forwards read-only mode for manual health/status paths.
 balloon_status(){ printf '%s\n' "$1" > "$TMP/mode"; section "POOLY MEMORY BALLOON"; echo "BALLOON STATE: IDLE"; echo "BALLOON RESULT: PASS"; return 0; }
 out="$(balloon_watch_section --no-persist)"
+assert_contains "$out" "BALLOON STATE: IDLE"
+assert_eq "$(cat "$TMP/mode")" "--no-persist"
+out="$(balloon_watch_section)"
 assert_contains "$out" "BALLOON STATE: IDLE"
 assert_eq "$(cat "$TMP/mode")" "--no-persist"
 
@@ -98,5 +102,17 @@ report="$(find "$REPORT_DIR" -type f -name 'pooly-server-guard-watch-*.txt' -pri
 [[ -n "$report" ]] || fail "guard_watch did not write report"
 grep -q '^BALLOON RESULT: WARN$' "$report" || fail "report omitted balloon result"
 grep -q '^SERVICE HEALTH RESULT: PASS$' "$report" || fail "report omitted later service checks"
+
+# A security failure must keep action priority over a simultaneous balloon warning.
+cat > "$TMP/fail-priority.txt" <<'FAIL_PRIORITY'
+RESULT: FAIL
+BALLOON STATE: ACTIVE
+BALLOON RESULT: WARN
+SERVICE HEALTH RESULT: PASS
+FAILED SERVICES RESULT: PASS
+FAIL_PRIORITY
+out="$(watch_issue_action "$TMP/fail-priority.txt")"
+assert_contains "$out" "security or access-control"
+assert_not_contains "$out" "Host-side memory balloon"
 
 printf 'PASS: watch balloon integration tests\n'
