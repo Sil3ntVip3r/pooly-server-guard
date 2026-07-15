@@ -1,14 +1,90 @@
 #!/usr/bin/env bash
 
-discord_post(){ load_env; [[ "${POOLY_DISCORD_ENABLED:-0}" == "1" ]] || return 0; [[ -n "${POOLY_DISCORD_WEBHOOK:-}" ]] || { echo "Missing POOLY_DISCORD_WEBHOOK in $POOLY_GUARD_ENV"; return 1; }; local payload; payload="{\"content\":$(printf '%s' "$1" | json_escape),\"allowed_mentions\":{\"parse\":[]}}"; curl -fsS -H 'Content-Type: application/json' -d "$payload" "$POOLY_DISCORD_WEBHOOK" >/dev/null; }
+discord_webhook_safe(){
+  local url="${1:-}"
+  [[ -n "$url" ]] || return 1
+  [[ "$url" != *$'\n'* && "$url" != *$'\r'* ]] || return 1
+  [[ "$url" != *'"'* && "$url" != *'\\'* && "$url" != *[[:space:]]* ]] || return 1
+  case "$url" in
+    https://discord.com/api/webhooks/*/*|https://discordapp.com/api/webhooks/*/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+discord_protect_webhook_env(){
+  export -n POOLY_DISCORD_WEBHOOK 2>/dev/null || true
+}
+
+discord_curl_config_line(){
+  local url="${1:-}"
+  discord_webhook_safe "$url" || return 1
+  printf 'url = "%s"\n' "$url"
+}
+
+discord_curl_post_file(){
+  local payload_file="${1:?missing payload file}" config_line
+  [[ -r "$payload_file" ]] || return 1
+  config_line="$(discord_curl_config_line "${POOLY_DISCORD_WEBHOOK:-}")" || return 2
+  POOLY_DISCORD_WEBHOOK= curl -fsS \
+    --config - \
+    -H 'Content-Type: application/json' \
+    --data-binary "@$payload_file" \
+    >/dev/null \
+    <<< "$config_line"
+}
+
+discord_curl_status_file(){
+  local payload_file="${1:?missing payload file}" response_file="${2:?missing response file}" config_line
+  [[ -r "$payload_file" ]] || return 1
+  config_line="$(discord_curl_config_line "${POOLY_DISCORD_WEBHOOK:-}")" || return 2
+  POOLY_DISCORD_WEBHOOK= curl -sS \
+    --config - \
+    -o "$response_file" \
+    -w '%{http_code}' \
+    -H 'Content-Type: application/json' \
+    --data-binary "@$payload_file" \
+    <<< "$config_line"
+}
+
+discord_post(){
+  load_env
+  discord_protect_webhook_env
+  [[ "${POOLY_DISCORD_ENABLED:-0}" == "1" ]] || return 0
+  [[ -n "${POOLY_DISCORD_WEBHOOK:-}" ]] || { echo "Missing POOLY_DISCORD_WEBHOOK in $POOLY_GUARD_ENV"; return 1; }
+  discord_webhook_safe "$POOLY_DISCORD_WEBHOOK" || { echo "Invalid Discord webhook format in $POOLY_GUARD_ENV"; return 1; }
+  command -v curl >/dev/null 2>&1 || { echo "curl is required for Discord delivery"; return 1; }
+
+  local payload payload_file rc=0
+  payload="{\"content\":$(printf '%s' "$1" | json_escape),\"allowed_mentions\":{\"parse\":[]}}"
+  payload_file="$(mktemp)" || return 1
+  chmod 600 "$payload_file" 2>/dev/null || true
+  if ! printf '%s' "$payload" > "$payload_file"; then
+    rm -f "$payload_file"
+    return 1
+  fi
+  discord_curl_post_file "$payload_file" || rc=$?
+  rm -f "$payload_file"
+  return "$rc"
+}
 
 discord_post_json_file(){
-  local payload_file="${1:?missing payload file}"; load_env
+  local payload_file="${1:?missing payload file}"
+  load_env
+  discord_protect_webhook_env
   [[ "${POOLY_DISCORD_ENABLED:-0}" == "1" ]] || { echo "DISCORD RESULT: SKIP_DISABLED"; return 0; }
   [[ -n "${POOLY_DISCORD_WEBHOOK:-}" ]] || { echo "DISCORD RESULT: FAIL_MISSING_WEBHOOK"; return 0; }
+  discord_webhook_safe "$POOLY_DISCORD_WEBHOOK" || { echo "DISCORD RESULT: FAIL_INVALID_WEBHOOK_FORMAT"; return 0; }
+  [[ -r "$payload_file" ]] || { echo "DISCORD RESULT: FAIL_PAYLOAD_UNREADABLE"; return 0; }
   command -v curl >/dev/null 2>&1 || { echo "DISCORD RESULT: FAIL_CURL_MISSING"; return 0; }
-  local response_file http_code retry_after http_code2; response_file="$(mktemp)"
-  http_code="$(curl -sS -o "$response_file" -w '%{http_code}' -H 'Content-Type: application/json' -d @"$payload_file" "$POOLY_DISCORD_WEBHOOK" 2>/dev/null || echo curl_failed)"
+
+  local response_file http_code retry_after http_code2
+  response_file="$(mktemp)" || { echo "DISCORD RESULT: FAIL_TEMPFILE"; return 0; }
+  chmod 600 "$response_file" 2>/dev/null || true
+  if http_code="$(discord_curl_status_file "$payload_file" "$response_file" 2>/dev/null)"; then
+    :
+  else
+    http_code="curl_failed"
+  fi
   case "$http_code" in
     200|204) rm -f "$response_file"; echo "DISCORD RESULT: PASS"; return 0 ;;
     429)
@@ -20,7 +96,19 @@ except Exception:
     print(1)
 PY
 )"
-      sleep "${retry_after:-1}"; http_code2="$(curl -sS -o "$response_file" -w '%{http_code}' -H 'Content-Type: application/json' -d @"$payload_file" "$POOLY_DISCORD_WEBHOOK" 2>/dev/null || echo curl_failed)"; rm -f "$response_file"; case "$http_code2" in 200|204) echo "DISCORD RESULT: PASS_AFTER_429_RETRY" ;; *) echo "DISCORD RESULT: FAIL_HTTP_${http_code2}_AFTER_429" ;; esac; return 0 ;;
+      sleep "${retry_after:-1}"
+      if http_code2="$(discord_curl_status_file "$payload_file" "$response_file" 2>/dev/null)"; then
+        :
+      else
+        http_code2="curl_failed"
+      fi
+      rm -f "$response_file"
+      case "$http_code2" in
+        200|204) echo "DISCORD RESULT: PASS_AFTER_429_RETRY" ;;
+        *) echo "DISCORD RESULT: FAIL_HTTP_${http_code2}_AFTER_429" ;;
+      esac
+      return 0
+      ;;
     404) rm -f "$response_file"; echo "DISCORD RESULT: FAIL_INVALID_WEBHOOK_404"; return 0 ;;
     curl_failed) rm -f "$response_file"; echo "DISCORD RESULT: FAIL_CURL"; return 0 ;;
     *) rm -f "$response_file"; echo "DISCORD RESULT: FAIL_HTTP_${http_code}"; return 0 ;;
