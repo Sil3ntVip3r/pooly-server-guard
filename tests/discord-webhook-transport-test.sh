@@ -91,7 +91,7 @@ assert_not_contains "$args" "$POOLY_DISCORD_WEBHOOK"
 assert_contains "$stdin_data" "url = \"$POOLY_DISCORD_WEBHOOK\""
 assert_contains "$args" "<--config>"
 assert_contains "$args" "<->"
-assert_contains "$args" "WEBHOOK_ENV=<>"
+assert_contains "$args" "WEBHOOK_ENV=<unset>"
 
 # Plain text Discord delivery uses the same protected transport.
 : > "$FAKE_CURL_ARGS"
@@ -123,6 +123,14 @@ out="$(discord_post_json_file "$payload_file")"
 assert_contains "$out" "DISCORD RESULT: FAIL_INVALID_WEBHOOK_FORMAT"
 [[ ! -s "$FAKE_CURL_ARGS" ]] || fail "curl ran for an invalid webhook"
 assert_not_contains "$out" "$POOLY_DISCORD_WEBHOOK"
+
+# Curl-config injection characters are rejected before curl is executed.
+: > "$FAKE_CURL_ARGS"
+POOLY_DISCORD_WEBHOOK=$'https://discord.com/api/webhooks/123/token\noutput = "/tmp/pooly-webhook-injection"'
+out="$(discord_post_json_file "$payload_file")"
+assert_contains "$out" "DISCORD RESULT: FAIL_INVALID_WEBHOOK_FORMAT"
+[[ ! -s "$FAKE_CURL_ARGS" ]] || fail "curl ran for an injected webhook value"
+[[ ! -e /tmp/pooly-webhook-injection ]] || fail "injected curl config wrote a file"
 
 # Static guard against reintroducing the secret as a curl command-line argument.
 if grep -En 'curl[^\n]*\$\{?POOLY_DISCORD_WEBHOOK' "$ROOT/lib/discord.sh"; then
