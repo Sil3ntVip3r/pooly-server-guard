@@ -28,7 +28,7 @@ version_info(){
 }
 
 balloon_watch_section(){
-  local mode="${1:---persist}" tmp rc=0 result
+  local mode="${1:---no-persist}" tmp rc=0 result
   case "$mode" in
     --persist|--no-persist) ;;
     *) mode="--no-persist" ;;
@@ -85,7 +85,28 @@ balloon_command_missing(){
 watch_results_summary(){ local file="${1:?missing report tmp}"; grep -E '^(LOCK RESULT|UPDATE RESULT|RESULT|BASELINE RESULT|SERVER HEALTH RESULT|BALLOON RESULT|TIMER RESULT|JOURNAL GROWTH RESULT|REPORT PRUNE RESULT|MEMORY DIAGNOSTIC RESULT|LOAD DIAGNOSTIC RESULT|PORT RESULT|KEYS RESULT|SSHD DRIFT RESULT|UFW DRIFT RESULT|SERVICE RESULT|SERVICE HEALTH RESULT|FAILED SERVICES RESULT|DISCORD RESULT|WATCH RESULT):' "$file" | sed 's/^/- /' | head -32; }
 watch_health_summary(){ local file="${1:?missing report tmp}"; grep -E '^(DISK /|DISK WORST|INODES /|RAM:|SWAP:|LOAD:|BALLOON STATE:|BALLOON OUTSTANDING:|BALLOON INFLATE SINCE LAST CHECK:|BALLOON DEFLATE SINCE LAST CHECK:|UPTIME:|REBOOT REQUIRED:|JOURNAL SIZE:|JOURNAL GROWTH:|GPTLOGS SIZE:)' "$file" | sed 's/^/- /' | head -18 || true; }
 watch_issue_summary(){ local file="${1:?missing report tmp}"; { grep -E '^(DISK /|DISK WORST|INODES /|RAM:|SWAP:|LOAD:|REBOOT REQUIRED:|JOURNAL SIZE:|JOURNAL GROWTH:|GPTLOGS SIZE:).*(— WARN|— FAIL)' "$file" | sed 's/^/- /'; grep -E '^(LOCK RESULT|UPDATE RESULT|RESULT|BASELINE RESULT|SERVER HEALTH RESULT|BALLOON RESULT|TIMER RESULT|JOURNAL GROWTH RESULT|REPORT PRUNE RESULT|MEMORY DIAGNOSTIC RESULT|LOAD DIAGNOSTIC RESULT|PORT RESULT|KEYS RESULT|SSHD DRIFT RESULT|UFW DRIFT RESULT|SERVICE RESULT|SERVICE HEALTH RESULT|FAILED SERVICES RESULT|WATCH RESULT): (WARN|FAIL|SKIP|SKIP_LOCKED)' "$file" | sed 's/^/- /'; if grep -q '^BALLOON RESULT: WARN' "$file"; then grep -E '^(BALLOON STATE:|BALLOON OUTSTANDING:|BALLOON INFLATE SINCE LAST CHECK:|BALLOON DEFLATE SINCE LAST CHECK:|SWAP-OUT DELTA:|OOM KILL DELTA:)' "$file" | sed 's/^/- /'; fi; grep -E '^(FAIL:|WARN:|ERROR:)' "$file" | sed 's/^/- /'; } | awk '!seen[$0]++' | head -16; }
-watch_issue_action(){ local file="${1:?missing report tmp}"; if grep -Eq 'SERVICE HEALTH RESULT: FAIL|FAILED SERVICES RESULT: FAIL|SERVICE RESULT: FAIL' "$file"; then echo "A Pooly/system service check failed. Review service health and failed systemd units on this node."; elif grep -Eq 'SSHD DRIFT RESULT: FAIL|KEYS RESULT: FAIL|UFW DRIFT RESULT: FAIL|RESULT: FAIL' "$file"; then echo "A security or access-control check failed. Review SSH, keys, sudo, and firewall drift immediately."; elif grep -Eq '^BALLOON RESULT: WARN' "$file"; then echo "Host-side memory balloon activity was detected. Review balloon state, RAM availability, swap growth, and the full report; Phase 1 performs no remediation."; elif grep -Eq '^(DISK /|DISK WORST|JOURNAL SIZE:|JOURNAL GROWTH:|GPTLOGS SIZE:).*(— WARN|— FAIL)' "$file"; then echo "Storage/logs crossed a threshold. Check disk, journal growth, and GPTlogs before services are affected."; elif grep -Eq '^(RAM:|SWAP:).*(— WARN|— FAIL)' "$file"; then echo "Memory pressure crossed a threshold. Alpha4.0 captured top memory/process evidence in the report."; elif grep -Eq '^LOAD: .*(— WARN|— FAIL)' "$file"; then echo "CPU/load pressure crossed a threshold. Alpha4.0 captured top CPU/process evidence in the report."; elif grep -Eq '^REBOOT REQUIRED: yes' "$file"; then echo "Server reports reboot required. Plan a controlled reboot window when safe."; elif grep -Eq 'REPORT PRUNE RESULT: WARN|REPORT PRUNE RESULT: FAIL' "$file"; then echo "Report pruning needs attention. Review REPORT_DIR safety checks and GPTlogs report counts."; else echo "Review the issue summary and open the report path on the affected server."; fi; }
+watch_issue_action(){
+  local file="${1:?missing report tmp}"
+  if grep -Eq 'SSHD DRIFT RESULT: FAIL|KEYS RESULT: FAIL|UFW DRIFT RESULT: FAIL|RESULT: FAIL' "$file"; then
+    echo "A security or access-control check failed. Review SSH, keys, sudo, and firewall drift immediately."
+  elif grep -Eq 'SERVICE HEALTH RESULT: FAIL|FAILED SERVICES RESULT: FAIL|SERVICE RESULT: FAIL' "$file"; then
+    echo "A Pooly/system service check failed. Review service health and failed systemd units on this node."
+  elif grep -Eq '^(DISK /|DISK WORST|JOURNAL SIZE:|JOURNAL GROWTH:|GPTLOGS SIZE:).*(— WARN|— FAIL)' "$file"; then
+    echo "Storage/logs crossed a threshold. Check disk, journal growth, and GPTlogs before services are affected."
+  elif grep -Eq '^(RAM:|SWAP:).*(— WARN|— FAIL)' "$file"; then
+    echo "Memory pressure crossed a threshold. Alpha4.1 captured top memory/process evidence in the report."
+  elif grep -Eq '^LOAD: .*(— WARN|— FAIL)' "$file"; then
+    echo "CPU/load pressure crossed a threshold. Alpha4.1 captured top CPU/process evidence in the report."
+  elif grep -Eq '^REBOOT REQUIRED: yes' "$file"; then
+    echo "Server reports reboot required. Plan a controlled reboot window when safe."
+  elif grep -Eq 'REPORT PRUNE RESULT: WARN|REPORT PRUNE RESULT: FAIL' "$file"; then
+    echo "Report pruning needs attention. Review REPORT_DIR safety checks and GPTlogs report counts."
+  elif grep -Eq '^BALLOON RESULT: WARN' "$file"; then
+    echo "Host-side memory balloon activity was detected. Review balloon state, RAM availability, swap growth, and the full report; Phase 1 performs no remediation."
+  else
+    echo "Review the issue summary and open the report path on the affected server."
+  fi
+}
 
 guard_watch(){
   clear_self_failed_state; mkdirs; load_env; health_defaults
