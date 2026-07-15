@@ -181,9 +181,23 @@ balloon_release_lock(){
 }
 
 balloon_status(){
+  local mode="${1:---no-persist}" persist=0
+  case "$mode" in
+    --persist) persist=1 ;;
+    --no-persist) persist=0 ;;
+    *)
+      section "POOLY MEMORY BALLOON"
+      echo "Usage: balloon_status [--persist|--no-persist]"
+      echo "BALLOON STATE: ERROR"
+      echo "BALLOON RESULT: FAIL"
+      return 1
+      ;;
+  esac
+
   load_env || { section "POOLY MEMORY BALLOON"; echo "WARN: unable to load safe Server Guard environment"; echo "BALLOON STATE: ERROR"; echo "BALLOON RESULT: WARN"; return 2; }
   balloon_defaults
   section "POOLY MEMORY BALLOON"
+  if (( persist == 1 )); then echo "BALLOON SAMPLE MODE: PERSIST"; else echo "BALLOON SAMPLE MODE: READ_ONLY"; fi
 
   if [[ "$POOLY_BALLOON_MONITOR_ENABLED" != "1" ]]; then
     echo "BALLOON SUPPORTED: not checked"
@@ -231,7 +245,7 @@ balloon_status(){
   IFS=$'\t' read -r boot_id epoch utc inflate deflate migrate pswpin pswpout pgmajfault oom_kill \
     mem_total_kib mem_available_kib swap_total_kib swap_free_kib psi_some psi_full page_size <<< "$sample"
 
-  local state_dir="$POOLY_BALLOON_STATE_DIR" state_file history_file lock_file lock_fd
+  local state_dir="$POOLY_BALLOON_STATE_DIR" state_file history_file lock_file lock_fd=""
   state_file="$state_dir/state.tsv"
   history_file="$state_dir/history.tsv"
   lock_file="$state_dir/state.lock"
@@ -250,56 +264,72 @@ balloon_status(){
     echo "BALLOON RESULT: WARN"
     return 2
   fi
-  if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
-    install -d -o root -g root -m 700 "$state_dir" 2>/dev/null || {
+  if [[ -e "$state_dir" && ! -d "$state_dir" ]]; then
+    echo "BALLOON SUPPORTED: yes"
+    echo "WARN: balloon state path is not a directory: $state_dir"
+    echo "BALLOON STATE: ERROR"
+    echo "BALLOON RESULT: WARN"
+    return 2
+  fi
+
+  if (( persist == 1 )); then
+    if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
+      install -d -o root -g root -m 700 "$state_dir" 2>/dev/null || {
+        echo "BALLOON SUPPORTED: yes"
+        echo "WARN: unable to create protected balloon state directory: $state_dir"
+        echo "BALLOON STATE: ERROR"
+        echo "BALLOON RESULT: WARN"
+        return 2
+      }
+    elif ! install -d -m 700 "$state_dir" 2>/dev/null; then
       echo "BALLOON SUPPORTED: yes"
       echo "WARN: unable to create protected balloon state directory: $state_dir"
       echo "BALLOON STATE: ERROR"
       echo "BALLOON RESULT: WARN"
       return 2
+    fi
+    if [[ ! -d "$state_dir" || -L "$state_dir" ]]; then
+      echo "BALLOON SUPPORTED: yes"
+      echo "WARN: balloon state path is not a safe directory: $state_dir"
+      echo "BALLOON STATE: ERROR"
+      echo "BALLOON RESULT: WARN"
+      return 2
+    fi
+    if [[ ${EUID:-$(id -u)} -eq 0 && "$(stat -c '%u' "$state_dir" 2>/dev/null || echo -1)" != "0" ]]; then
+      echo "BALLOON SUPPORTED: yes"
+      echo "WARN: balloon state directory is not root-owned: $state_dir"
+      echo "BALLOON STATE: ERROR"
+      echo "BALLOON RESULT: WARN"
+      return 2
+    fi
+    chmod 700 "$state_dir" 2>/dev/null || true
+    touch "$lock_file" 2>/dev/null || {
+      echo "BALLOON SUPPORTED: yes"
+      echo "WARN: unable to open balloon state lock: $lock_file"
+      echo "BALLOON STATE: ERROR"
+      echo "BALLOON RESULT: WARN"
+      return 2
     }
-  elif ! install -d -m 700 "$state_dir" 2>/dev/null; then
-    echo "BALLOON SUPPORTED: yes"
-    echo "WARN: unable to create protected balloon state directory: $state_dir"
-    echo "BALLOON STATE: ERROR"
-    echo "BALLOON RESULT: WARN"
-    return 2
-  fi
-  if [[ ! -d "$state_dir" || -L "$state_dir" ]]; then
-    echo "BALLOON SUPPORTED: yes"
-    echo "WARN: balloon state path is not a safe directory: $state_dir"
-    echo "BALLOON STATE: ERROR"
-    echo "BALLOON RESULT: WARN"
-    return 2
-  fi
-  if [[ ${EUID:-$(id -u)} -eq 0 && "$(stat -c '%u' "$state_dir" 2>/dev/null || echo -1)" != "0" ]]; then
+    chmod 600 "$lock_file" 2>/dev/null || true
+    [[ ${EUID:-$(id -u)} -eq 0 ]] && chown root:root "$lock_file" 2>/dev/null || true
+    exec {lock_fd}>"$lock_file" || {
+      echo "BALLOON SUPPORTED: yes"
+      echo "WARN: unable to acquire balloon state lock descriptor"
+      echo "BALLOON STATE: ERROR"
+      echo "BALLOON RESULT: WARN"
+      return 2
+    }
+    if ! flock -w "$POOLY_BALLOON_LOCK_WAIT_SECONDS" "$lock_fd"; then
+      balloon_release_lock "$lock_fd"
+      echo "BALLOON SUPPORTED: yes"
+      echo "WARN: balloon state is busy; sample not persisted"
+      echo "BALLOON STATE: ERROR"
+      echo "BALLOON RESULT: WARN"
+      return 2
+    fi
+  elif [[ -d "$state_dir" && ${EUID:-$(id -u)} -eq 0 && "$(stat -c '%u' "$state_dir" 2>/dev/null || echo -1)" != "0" ]]; then
     echo "BALLOON SUPPORTED: yes"
     echo "WARN: balloon state directory is not root-owned: $state_dir"
-    echo "BALLOON STATE: ERROR"
-    echo "BALLOON RESULT: WARN"
-    return 2
-  fi
-  chmod 700 "$state_dir" 2>/dev/null || true
-  touch "$lock_file" 2>/dev/null || {
-    echo "BALLOON SUPPORTED: yes"
-    echo "WARN: unable to open balloon state lock: $lock_file"
-    echo "BALLOON STATE: ERROR"
-    echo "BALLOON RESULT: WARN"
-    return 2
-  }
-  chmod 600 "$lock_file" 2>/dev/null || true
-  [[ ${EUID:-$(id -u)} -eq 0 ]] && chown root:root "$lock_file" 2>/dev/null || true
-  exec {lock_fd}>"$lock_file" || {
-    echo "BALLOON SUPPORTED: yes"
-    echo "WARN: unable to acquire balloon state lock descriptor"
-    echo "BALLOON STATE: ERROR"
-    echo "BALLOON RESULT: WARN"
-    return 2
-  }
-  if ! flock -w "$POOLY_BALLOON_LOCK_WAIT_SECONDS" "$lock_fd"; then
-    balloon_release_lock "$lock_fd"
-    echo "BALLOON SUPPORTED: yes"
-    echo "WARN: balloon state is busy; sample not persisted"
     echo "BALLOON STATE: ERROR"
     echo "BALLOON RESULT: WARN"
     return 2
@@ -324,12 +354,16 @@ balloon_status(){
 
   local delta_inflate=0 delta_deflate=0 delta_migrate=0 delta_pswpin=0 delta_pswpout=0
   local delta_pgmajfault=0 delta_oom=0 state="BASELINE" result="PASS" note=""
-  local reset=0
+  local reset=0 complete_cycle=0
 
   if [[ "$previous_status" == "corrupt" ]]; then
     state="STATE_RESET"
     result="WARN"
-    note="previous balloon state was invalid and has been replaced"
+    if (( persist == 1 )); then
+      note="previous balloon state was invalid and has been replaced"
+    else
+      note="previous balloon state is invalid; the next watch will replace it"
+    fi
   elif [[ "$previous_status" == "missing" ]]; then
     if (( outstanding_pages >= threshold_pages )); then
       state="ACTIVE"
@@ -358,10 +392,21 @@ balloon_status(){
     delta_oom=$((oom_kill-prev_oom))
 
     local prev_active=0
-    case "$prev_state" in ACTIVE|ACTIVE_CONTINUING|DEFLATING) prev_active=1 ;; esac
+    case "$prev_state" in ACTIVE|ACTIVE_CONTINUING|CYCLE_ACTIVE|DEFLATING) prev_active=1 ;; esac
+    if (( delta_inflate >= threshold_pages && delta_deflate >= threshold_pages )); then
+      if (( outstanding_pages < threshold_pages )); then
+        complete_cycle=1
+      elif (( delta_deflate >= prev_outstanding && delta_inflate >= outstanding_pages )); then
+        complete_cycle=1
+      fi
+    fi
 
     if (( outstanding_pages >= threshold_pages )); then
-      if (( delta_deflate > delta_inflate && delta_deflate > 0 )); then
+      if (( complete_cycle == 1 )); then
+        state="CYCLE_ACTIVE"
+        result="WARN"
+        note="one or more complete balloon cycles occurred between checks and significant ballooning remains active"
+      elif (( delta_deflate > delta_inflate && delta_deflate > 0 )); then
         state="DEFLATING"
       elif (( prev_active == 1 || prev_outstanding >= threshold_pages )); then
         state="ACTIVE_CONTINUING"
@@ -371,7 +416,7 @@ balloon_status(){
         note="new significant host balloon inflation detected"
       fi
     else
-      if (( delta_inflate >= threshold_pages && delta_deflate >= threshold_pages )); then
+      if (( complete_cycle == 1 )); then
         state="CYCLE_COMPLETED"
         result="WARN"
         note="one or more complete balloon cycles occurred between checks"
@@ -401,35 +446,46 @@ balloon_status(){
   if (( swap_total_kib > 0 )); then swap_pct=$((swap_used_kib*100/swap_total_kib)); fi
 
   local state_write_ok=1 history_write_ok=1
-  if ! balloon_write_state "$state_file" "$boot_id" "$epoch" "$inflate" "$deflate" "$migrate" \
-    "$pswpin" "$pswpout" "$pgmajfault" "$oom_kill" "$outstanding_pages" "$state"; then
-    state_write_ok=0
-    state="ERROR"
-    result="WARN"
-    note="unable to persist balloon state atomically"
-  fi
-
-  local history_line record_history=0
-  if [[ "$state" != "$prev_state" || "$previous_status" != "valid" ]] || \
-    (( delta_inflate > 0 || delta_deflate > 0 || delta_migrate > 0 || delta_pswpin > 0 || delta_pswpout > 0 || delta_pgmajfault > 0 || delta_oom > 0 )); then
-    record_history=1
-  fi
-  if (( record_history == 1 )); then
-    printf -v history_line '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
-      "$epoch" "$utc" "$boot_id" "$state" "$result" "$inflate" "$deflate" "$outstanding_pages" \
-      "$delta_inflate" "$delta_deflate" "$mem_available_kib" "$ram_pressure_pct" "$swap_used_kib" \
-      "$swap_pct" "$delta_pswpin" "$delta_pswpout" "$delta_pgmajfault" "$delta_oom" "$psi_some" "$psi_full" "$page_size"
-    if ! balloon_append_history "$history_file" "$POOLY_BALLOON_HISTORY_MAX_LINES" "$history_line"; then
-      history_write_ok=0
+  if (( persist == 1 )); then
+    if ! balloon_write_state "$state_file" "$boot_id" "$epoch" "$inflate" "$deflate" "$migrate" \
+      "$pswpin" "$pswpout" "$pgmajfault" "$oom_kill" "$outstanding_pages" "$state"; then
+      state_write_ok=0
       state="ERROR"
       result="WARN"
-      note="unable to persist bounded balloon history"
+      note="unable to persist balloon state atomically"
     fi
+
+    local history_line record_history=0 balloon_context=0
+    case "$state" in ACTIVE|ACTIVE_CONTINUING|CYCLE_ACTIVE|CYCLE_COMPLETED|DEFLATING|RECOVERED) balloon_context=1 ;; esac
+    case "$prev_state" in ACTIVE|ACTIVE_CONTINUING|CYCLE_ACTIVE|CYCLE_COMPLETED|DEFLATING|RECOVERED) balloon_context=1 ;; esac
+    if (( outstanding_pages >= threshold_pages || prev_outstanding >= threshold_pages )); then balloon_context=1; fi
+
+    if [[ "$state" != "$prev_state" || "$previous_status" != "valid" ]] || \
+      (( delta_inflate > 0 || delta_deflate > 0 || delta_migrate > 0 || delta_oom > 0 )) || \
+      (( balloon_context == 1 && (delta_pswpin > 0 || delta_pswpout > 0 || delta_pgmajfault > 0) )); then
+      record_history=1
+    fi
+    if (( record_history == 1 )); then
+      printf -v history_line '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
+        "$epoch" "$utc" "$boot_id" "$state" "$result" "$inflate" "$deflate" "$outstanding_pages" \
+        "$delta_inflate" "$delta_deflate" "$mem_available_kib" "$ram_pressure_pct" "$swap_used_kib" \
+        "$swap_pct" "$delta_pswpin" "$delta_pswpout" "$delta_pgmajfault" "$delta_oom" "$psi_some" "$psi_full" "$page_size"
+      if ! balloon_append_history "$history_file" "$POOLY_BALLOON_HISTORY_MAX_LINES" "$history_line"; then
+        history_write_ok=0
+        state="ERROR"
+        result="WARN"
+        note="unable to persist bounded balloon history"
+      fi
+    fi
+    if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
+      if ! chown root:root "$state_file" 2>/dev/null; then
+        state="ERROR"; result="WARN"; note="unable to enforce root ownership on balloon state"
+      elif [[ -e "$history_file" ]] && ! chown root:root "$history_file" 2>/dev/null; then
+        state="ERROR"; result="WARN"; note="unable to enforce root ownership on balloon history"
+      fi
+    fi
+    balloon_release_lock "$lock_fd"
   fi
-  if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
-    chown root:root "$state_file" "$history_file" 2>/dev/null || { state="ERROR"; result="WARN"; note="unable to enforce root ownership on balloon state"; }
-  fi
-  balloon_release_lock "$lock_fd"
 
   echo "BALLOON SUPPORTED: yes"
   echo "BALLOON STATE: $state"
@@ -449,7 +505,11 @@ balloon_status(){
   if [[ -n "$note" ]]; then
     if [[ "$result" == "WARN" || "$result" == "FAIL" ]]; then echo "WARN: $note"; else echo "INFO: $note"; fi
   fi
-  [[ "$state_write_ok" == "1" && "$history_write_ok" == "1" ]] || echo "WARN: balloon state persistence is degraded"
+  if (( persist == 1 )); then
+    [[ "$state_write_ok" == "1" && "$history_write_ok" == "1" ]] || echo "WARN: balloon state persistence is degraded"
+  else
+    echo "INFO: read-only sample did not advance balloon alert state"
+  fi
   echo "BALLOON RESULT: $result"
   status_return "$result"
 }
