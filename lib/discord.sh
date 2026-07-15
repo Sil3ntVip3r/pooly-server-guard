@@ -1,14 +1,20 @@
 #!/usr/bin/env bash
 
 discord_webhook_safe(){
-  local url="${1:-}"
+  local url="${1:-}" rest id token
   [[ -n "$url" ]] || return 1
   [[ "$url" != *$'\n'* && "$url" != *$'\r'* ]] || return 1
   [[ "$url" != *'"'* && "$url" != *'\\'* && "$url" != *[[:space:]]* ]] || return 1
   case "$url" in
-    https://discord.com/api/webhooks/*/*|https://discordapp.com/api/webhooks/*/*) return 0 ;;
+    https://discord.com/api/webhooks/*) rest="${url#https://discord.com/api/webhooks/}" ;;
+    https://discordapp.com/api/webhooks/*) rest="${url#https://discordapp.com/api/webhooks/}" ;;
     *) return 1 ;;
   esac
+  id="${rest%%/*}"
+  token="${rest#*/}"
+  [[ "$rest" != "$id" ]] || return 1
+  [[ "$id" =~ ^[0-9]+$ ]] || return 1
+  [[ -n "$token" ]]
 }
 
 discord_protect_webhook_env(){
