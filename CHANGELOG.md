@@ -8,7 +8,14 @@
 - Added `balloon-status` and `balloon-history` commands.
 - Added atomic protected balloon state and bounded history under `/etc/pooly/server-guard-state/balloon/`.
 - Added transition-based balloon event states and Discord evidence.
-- Added fixture, rollback, Discord, fault-isolation, syntax, and ShellCheck CI tests.
+- Added fixture, rollback, Discord, webhook-transport, fault-isolation, syntax, and ShellCheck CI tests.
+
+### Fixed
+
+- Detects a completed balloon cycle even when significant inflation is active again at the next sample.
+- Prevents `health`, `save-report`, and `balloon-status` from advancing scheduled balloon alert state.
+- Prevents ordinary idle swap/page-fault noise from filling balloon event history.
+- Prevents Discord webhook URLs from appearing in `curl` process arguments by supplying the URL through protected standard input.
 
 ### Safety
 
@@ -16,6 +23,7 @@
 - Phase 1 performs no swap, service, kernel, process, reboot, or systemd remediation.
 - The optional module runs in an isolated subshell so module failures cannot abort the remaining watch checks.
 - The module is not a required startup or release-validation dependency, preserving rollback to Alpha4.0.1.
+- Existing exposed Discord webhooks must still be rotated; the transport fix protects future process snapshots only.
 
 ## v0.4.9
 
