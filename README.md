@@ -68,7 +68,7 @@ OOM_OBSERVED
 ERROR
 ```
 
-Balloon warnings are transition-based to avoid repeated Discord alerts during one event. A `CYCLE_ACTIVE` warning means one or more complete inflate/deflate cycles occurred between checks and significant ballooning was active again at sampling time. Existing RAM and swap thresholds continue to determine overall server-health severity.
+Balloon warnings are transition-based to avoid repeated Discord alerts during one event. A `CYCLE_ACTIVE` warning means cycle-scale inflate and deflate movement occurred between checks while significant ballooning was still active at sampling time. Cumulative counters cannot prove the exact ordering or number of cycles between samples. Existing RAM and swap thresholds continue to determine overall server-health severity.
 
 Only the scheduled/manual `watch` command advances balloon alert state. `balloon-status`, `health`, and `save-report` collect read-only samples, so a diagnostic command cannot consume a transition before the next scheduled Discord alert.
 
