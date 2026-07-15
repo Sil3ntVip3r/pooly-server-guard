@@ -49,3 +49,6 @@ jobs:
 
       - name: Discord balloon payload
         run: bash tests/discord-balloon-test.sh
+
+      - name: Discord webhook transport
+        run: bash tests/discord-webhook-transport-test.sh
