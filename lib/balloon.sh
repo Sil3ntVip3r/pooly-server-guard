@@ -396,7 +396,7 @@ balloon_status(){
     if (( delta_inflate >= threshold_pages && delta_deflate >= threshold_pages )); then
       if (( outstanding_pages < threshold_pages )); then
         complete_cycle=1
-      elif (( delta_deflate >= prev_outstanding && delta_inflate >= outstanding_pages )); then
+      elif (( prev_outstanding >= threshold_pages && delta_deflate >= prev_outstanding && delta_inflate >= outstanding_pages )); then
         complete_cycle=1
       fi
     fi
@@ -405,7 +405,7 @@ balloon_status(){
       if (( complete_cycle == 1 )); then
         state="CYCLE_ACTIVE"
         result="WARN"
-        note="one or more complete balloon cycles occurred between checks and significant ballooning remains active"
+        note="cycle-scale inflate and deflate activity occurred between checks and significant ballooning remains active"
       elif (( delta_deflate > delta_inflate && delta_deflate > 0 )); then
         state="DEFLATING"
       elif (( prev_active == 1 || prev_outstanding >= threshold_pages )); then
