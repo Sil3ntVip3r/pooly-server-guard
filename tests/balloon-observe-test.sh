@@ -216,6 +216,16 @@ assert_eq "$(status_rc "$res")" "0"
 assert_contains "$(status_output "$res")" "BALLOON STATE: IDLE"
 assert_eq "$(wc -l < "$POOLY_BALLOON_STATE_DIR/history.tsv" | tr -d ' ')" "$history_before_idle"
 
+# Partial deflation during a newly active event must not be misclassified as a complete cycle.
+reset_fixture
+write_vmstat "$BASE" "$BASE"
+run_status >/dev/null
+write_vmstat $((BASE+THRESHOLD_PAGES*10)) $((BASE+THRESHOLD_PAGES*2))
+res="$(run_status)"
+assert_eq "$(status_rc "$res")" "2"
+assert_contains "$(status_output "$res")" "BALLOON STATE: ACTIVE"
+assert_not_contains "$(status_output "$res")" "BALLOON STATE: CYCLE_ACTIVE"
+
 # A complete cycle followed by renewed inflation before the next sample must still warn.
 reset_fixture
 write_vmstat "$BASE" "$BASE"
@@ -229,7 +239,7 @@ write_vmstat $((BASE+active_outstanding+cycle)) $((BASE+cycle))
 res="$(run_status)"
 assert_eq "$(status_rc "$res")" "2"
 assert_contains "$(status_output "$res")" "BALLOON STATE: CYCLE_ACTIVE"
-assert_contains "$(status_output "$res")" "complete balloon cycles occurred between checks and significant ballooning remains active"
+assert_contains "$(status_output "$res")" "cycle-scale inflate and deflate activity occurred between checks and significant ballooning remains active"
 res="$(run_status)"
 assert_eq "$(status_rc "$res")" "0"
 assert_contains "$(status_output "$res")" "BALLOON STATE: ACTIVE_CONTINUING"
