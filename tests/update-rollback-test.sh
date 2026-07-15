@@ -44,6 +44,8 @@ make_runtime "$feature" 1
 out="$(POOLY_LIB_DIR="$feature/lib" "$feature/pooly-server-guard.sh" --help)"
 assert_contains "$out" "Pooly Server Guard v0.5.0-alpha4.1.0"
 assert_contains "$out" "balloon-status"
+out="$(POOLY_LIB_DIR="$feature/lib" POOLY_BALLOON_MONITOR_ENABLED=0 "$feature/pooly-server-guard.sh" balloon-status)"
+assert_contains "$out" "BALLOON SAMPLE MODE: READ_ONLY"
 
 rm -f "$feature/lib/balloon.sh"
 out="$(POOLY_LIB_DIR="$feature/lib" "$feature/pooly-server-guard.sh" --help)"
