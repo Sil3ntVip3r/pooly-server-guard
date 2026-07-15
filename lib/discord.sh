@@ -25,25 +25,23 @@ discord_curl_post_file(){
   local payload_file="${1:?missing payload file}" config_line
   [[ -r "$payload_file" ]] || return 1
   config_line="$(discord_curl_config_line "${POOLY_DISCORD_WEBHOOK:-}")" || return 2
-  POOLY_DISCORD_WEBHOOK= curl -fsS \
+  printf '%s' "$config_line" | env -u POOLY_DISCORD_WEBHOOK curl -fsS \
     --config - \
     -H 'Content-Type: application/json' \
     --data-binary "@$payload_file" \
-    >/dev/null \
-    <<< "$config_line"
+    >/dev/null
 }
 
 discord_curl_status_file(){
   local payload_file="${1:?missing payload file}" response_file="${2:?missing response file}" config_line
   [[ -r "$payload_file" ]] || return 1
   config_line="$(discord_curl_config_line "${POOLY_DISCORD_WEBHOOK:-}")" || return 2
-  POOLY_DISCORD_WEBHOOK= curl -sS \
+  printf '%s' "$config_line" | env -u POOLY_DISCORD_WEBHOOK curl -sS \
     --config - \
     -o "$response_file" \
     -w '%{http_code}' \
     -H 'Content-Type: application/json' \
-    --data-binary "@$payload_file" \
-    <<< "$config_line"
+    --data-binary "@$payload_file"
 }
 
 discord_post(){
